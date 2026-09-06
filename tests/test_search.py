@@ -98,3 +98,4 @@ def test_highlight_text_marks_query() -> None:
     plain = rendered.plain
     assert "Kaufvertrag" in plain
     assert any(span.style and "f5d595" in str(span.style) for span in rendered.spans)
+    assert any(span.style and "on #" in str(span.style).casefold() for span in rendered.spans)

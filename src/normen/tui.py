@@ -14,7 +14,7 @@ from normen.config import Config
 from normen.document import iter_body_blocks, law_pos_label, norm_heading
 from normen.fetch import LawLibrary
 from normen.models import Law, Norm, SearchHit
-from normen.search import format_search_hit, lookup_norm, search_norms
+from normen.search import format_search_hit, highlight_text, lookup_norm, search_norms
 from normen.session import SessionStore
 from normen.theme import PASTEL_DARK
 
@@ -105,7 +105,10 @@ def _law_title(abbreviation: str, title: str) -> str:
 
 
 def _law_option(ref: LawRef, query: str = "") -> Option:
-    return Option(f"{ref.shortcut:<8}{ref.title}", id=ref.slug)
+    prompt = Text()
+    prompt.append_text(highlight_text(f"{ref.shortcut:<8}", query))
+    prompt.append_text(highlight_text(ref.title, query))
+    return Option(prompt, id=ref.slug)
 
 
 def _para_char(char: str) -> bool:

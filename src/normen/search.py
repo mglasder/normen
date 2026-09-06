@@ -118,6 +118,6 @@ def highlight_text(text: str, query: str) -> Text:
             result.append(text[start:])
             break
         result.append(text[start:index])
-        result.append(text[index : index + len(needle)], style="bold #f5d595")
+        result.append(text[index : index + len(needle)], style="bold #10171e on #f5d595")
         start = index + len(needle)
     return result

@@ -433,6 +433,10 @@ async def _menu_filter(cache_dir: Path) -> None:
         assert laws.highlighted == 0
         option = laws.get_option_at_index(0)
         assert option.id == "gg"
+        prompt = option.prompt
+        assert "Grundgesetz" in getattr(prompt, "plain", str(prompt))
+        spans = getattr(prompt, "spans", ())
+        assert any(span.style and "f5d595" in str(span.style) for span in spans)
 
 
 def test_menu_search_jk_types_then_moves(tmp_path: Path) -> None:
