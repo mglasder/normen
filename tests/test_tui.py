@@ -413,6 +413,113 @@ async def _open_via_shortcut(cache_dir: Path) -> None:
         assert app.screen.ref.shortcut == "BGB"
 
 
+def test_menu_slash_filters_laws(tmp_path: Path) -> None:
+    asyncio.run(_menu_filter(tmp_path))
+
+
+async def _menu_filter(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, PickerScreen)
+        await pilot.press("slash")
+        assert screen.mode == "search"
+        assert str(screen.query_one("#mode").content) == "SEARCH"
+        await pilot.press("g", "r", "u", "n", "d")
+        await pilot.pause()
+        slugs = _picker_slugs(screen)
+        assert slugs == ["gg"]
+        laws = screen.query_one("#laws", OptionList)
+        assert laws.highlighted == 0
+        option = laws.get_option_at_index(0)
+        assert option.id == "gg"
+
+
+def test_menu_search_jk_types_then_moves(tmp_path: Path) -> None:
+    asyncio.run(_menu_search_jk(tmp_path))
+
+
+async def _menu_search_jk(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, PickerScreen)
+        await pilot.press("slash", "j", "v", "w")
+        await pilot.pause()
+        assert screen.search_nav is False
+        assert screen.query_one("#cmd", Input).value == "jvw"
+        assert _picker_slugs(screen) == []
+        await pilot.press("escape")
+        await pilot.press("slash", "v", "w")
+        await pilot.pause()
+        assert _picker_slugs(screen) == ["vwgo", "vwvfg"]
+        await pilot.press("enter")
+        assert screen.mode == "search"
+        assert screen.search_nav is True
+        laws = screen.query_one("#laws", OptionList)
+        assert laws.highlighted == 0
+        await pilot.press("j")
+        assert laws.highlighted == 1
+        await pilot.press("k")
+        assert laws.highlighted == 0
+        assert screen.query_one("#cmd", Input).value == "vw"
+
+
+def test_menu_search_enter_opens_highlighted(tmp_path: Path) -> None:
+    asyncio.run(_menu_search_open(tmp_path))
+
+
+async def _menu_search_open(cache_dir: Path) -> None:
+    app = _app(cache_dir, library=_multi_library(cache_dir))
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, PickerScreen)
+        await pilot.press("slash", "g", "g")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        assert isinstance(app.screen, ReaderScreen)
+        assert app.screen.ref.shortcut == "GG"
+        assert len(app.tabs) == 1
+
+
+def test_menu_search_esc_restores_list(tmp_path: Path) -> None:
+    asyncio.run(_menu_search_esc(tmp_path))
+
+
+async def _menu_search_esc(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, PickerScreen)
+        await pilot.press("slash", "g", "g")
+        await pilot.pause()
+        assert _picker_slugs(screen) == ["gg"]
+        await pilot.press("escape")
+        assert screen.mode == "normal"
+        assert str(screen.query_one("#mode").content) == "NORMAL"
+        assert _picker_slugs(screen) == ["bgb", "gg", "vwgo", "vwvfg"]
+        assert screen.query_one("#cmd", Input).value == ""
+
+
+def test_menu_search_no_matches_enter_leaves(tmp_path: Path) -> None:
+    asyncio.run(_menu_search_empty(tmp_path))
+
+
+async def _menu_search_empty(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, PickerScreen)
+        await pilot.press("slash", "z", "z", "z")
+        await pilot.pause()
+        assert _picker_slugs(screen) == []
+        await pilot.press("enter")
+        assert screen.mode == "normal"
+        assert _picker_slugs(screen) == ["bgb", "gg", "vwgo", "vwvfg"]
+
+
 def test_slash_filters_paragraphs_and_enter_jumps(tmp_path: Path) -> None:
     asyncio.run(_filter_and_jump(tmp_path))
 
@@ -854,6 +961,11 @@ def _multi_library(cache_dir: Path) -> LawLibrary:
         cache_dir=cache_dir,
         downloader=lambda slug: gg if slug == "gg" else bgb,
     )
+
+
+def _picker_slugs(screen: PickerScreen) -> list[str]:
+    laws = screen.query_one("#laws", OptionList)
+    return [str(option.id) for option in laws.options]
 
 
 def _tabs_plain(app: NormenApp) -> str:

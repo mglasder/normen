@@ -9,7 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from normen.catalog import LAWS, LawRef, resolve_law
+from normen.catalog import LawRef, filter_laws, resolve_law
 from normen.config import Config
 from normen.document import iter_body_blocks, law_pos_label, norm_heading
 from normen.fetch import LawLibrary
@@ -104,7 +104,7 @@ def _law_title(abbreviation: str, title: str) -> str:
     return f"{abbreviation}  {title}"
 
 
-def _law_option(ref: LawRef) -> Option:
+def _law_option(ref: LawRef, query: str = "") -> Option:
     return Option(f"{ref.shortcut:<8}{ref.title}", id=ref.slug)
 
 
@@ -145,6 +145,7 @@ class TabBar(Static):
 class PickerScreen(Screen):
     BINDINGS = [
         Binding("i", "enter_insert", "Insert", id="enter_insert", priority=True),
+        Binding("slash", "enter_search", "Suche", id="enter_search", priority=True),
         Binding("escape", "enter_normal", "Normal", show=False, id="enter_normal", priority=True),
         Binding("h,left", "move_left", "H", id="move_left", priority=True),
         Binding("j,down", "move_down", "J", id="move_down", priority=True),
@@ -156,15 +157,16 @@ class PickerScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self.mode = "normal"
-        self.filtering = False
+        self.search_nav = False
+
+    @property
+    def filtering(self) -> bool:
+        return self.mode == "search"
 
     def on_mount(self) -> None:
         self.title = "normen"
         self.sub_title = ""
-        self.query_one("#laws", OptionList).add_options(
-            [_law_option(ref) for ref in LAWS]
-        )
-        self.query_one("#laws", OptionList).highlighted = 0
+        self._render_laws("")
         self._set_mode("normal")
 
     def compose(self) -> ComposeResult:
@@ -182,13 +184,28 @@ class PickerScreen(Screen):
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if self.mode == "insert" and action not in INSERT_ONLY:
             return False
+        if self.mode == "search":
+            allowed = SEARCH_NAV_ACTIONS if self.search_nav else SEARCH_EDIT_ACTIONS
+            return action in allowed
         return True
 
     def action_enter_insert(self) -> None:
         self._set_mode("insert")
 
-    def action_enter_normal(self) -> None:
+    def action_enter_search(self) -> None:
+        if self.mode == "search":
+            self.search_nav = False
+            self._set_mode("search")
+            return
+        self.search_nav = False
         self.query_one("#cmd", CommandInput).value = ""
+        self._render_laws("")
+        self._set_mode("search")
+
+    def action_enter_normal(self) -> None:
+        self.search_nav = False
+        self.query_one("#cmd", CommandInput).value = ""
+        self._render_laws("")
         self._set_mode("normal")
 
     def action_move_down(self) -> None:
@@ -204,9 +221,21 @@ class PickerScreen(Screen):
         self.action_move_down()
 
     def action_confirm(self) -> None:
-        self._open_highlighted()
+        if self.mode == "search" and self.search_nav:
+            self._open_highlighted()
+            return
+        if self.mode != "search":
+            self._open_highlighted()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self.mode != "search" or self.search_nav:
+            return
+        self._render_laws(event.value.lstrip("/"))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self.mode == "search" and not self.search_nav:
+            self._lock_search()
+            return
         query = event.value.strip()
         event.input.value = ""
         if not query:
@@ -231,15 +260,51 @@ class PickerScreen(Screen):
         bar = self.query_one("#status")
         label = self.query_one("#mode", Static)
         inp = self.query_one("#cmd", CommandInput)
+        bar.remove_class("insert", "search")
         if mode == "insert":
             bar.add_class("insert")
             label.update("INSERT")
             inp.focus()
-        else:
-            bar.remove_class("insert")
-            label.update("NORMAL")
-            inp.blur()
-            self.query_one("#laws", OptionList).focus()
+            return
+        if mode == "search":
+            bar.add_class("search")
+            label.update("SEARCH")
+            if self.search_nav:
+                inp.blur()
+                self.query_one("#laws", OptionList).focus()
+                return
+            inp.focus()
+            inp.action_end()
+            return
+        label.update("NORMAL")
+        inp.blur()
+        self.query_one("#laws", OptionList).focus()
+
+    def _lock_search(self) -> None:
+        query = self.query_one("#cmd", CommandInput).value.lstrip("/")
+        if not filter_laws(query):
+            self.action_enter_normal()
+            return
+        self.search_nav = True
+        self._set_mode("search")
+
+    def _render_laws(self, query: str) -> None:
+        law_list = self.query_one("#laws", OptionList)
+        keep = None
+        if law_list.option_count and law_list.highlighted is not None:
+            keep = law_list.get_option_at_index(law_list.highlighted).id
+        law_list.clear_options()
+        refs = filter_laws(query)
+        if not refs:
+            return
+        highlight = 0
+        options = []
+        for index, ref in enumerate(refs):
+            options.append(_law_option(ref, query))
+            if keep and ref.slug == keep:
+                highlight = index
+        law_list.add_options(options)
+        law_list.highlighted = highlight
 
     def _open_highlighted(self) -> None:
         law_list = self.query_one("#laws", OptionList)
@@ -251,6 +316,10 @@ class PickerScreen(Screen):
             self._open(ref)
 
     def _open(self, ref: LawRef) -> None:
+        self.search_nav = False
+        self.query_one("#cmd", CommandInput).value = ""
+        self._render_laws("")
+        self._set_mode("normal")
         app = self.app
         assert isinstance(app, NormenApp)
         app.open_tab(ref)

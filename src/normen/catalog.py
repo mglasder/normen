@@ -28,3 +28,15 @@ def resolve_law(query: str) -> LawRef | None:
         if key in names:
             return law
     return None
+
+
+def filter_laws(query: str, laws: tuple[LawRef, ...] = LAWS) -> list[LawRef]:
+    key = query.strip().casefold()
+    if not key:
+        return list(laws)
+    matches = []
+    for law in laws:
+        haystack = (law.shortcut, law.slug, law.title, *law.aliases)
+        if any(key in part.casefold() for part in haystack):
+            matches.append(law)
+    return matches

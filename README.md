@@ -54,9 +54,13 @@ enter PARA mode.
 
 ### Search mode (`/`)
 
-Type to filter paragraphs (fuzzy list with preview); `j` and `k` are part of
-the query. `Enter` finishes the query so you can move with `j` `k`. `Enter`
-again jumps to the highlighted row. `/` continues editing the query. `Esc`
+On MENU, `/` filters the law list by shortcut, slug, or title (`gg`,
+`bürger`, `grund`). `j` and `k` are part of the query until `Enter`; then
+they move the filtered list. `Enter` again opens the highlighted law.
+`/` continues editing. `Esc` restores the full list.
+
+In a law tab, `/` filters paragraphs (fuzzy list with preview) the same
+way: type, `Enter` to move with `j` `k`, `Enter` again to jump. `Esc`
 returns to normal mode.
 
 ### Para mode (type a number)
@@ -64,7 +68,8 @@ returns to normal mode.
 Type a citation (`433`, `31a`) and press `Enter` to jump. `Esc` returns to
 normal mode.
 
-On the law picker, `i` still focuses the shortcut field (`BGB`, `gg`, …).
+On the law picker, `i` still focuses the shortcut field (`BGB`, `gg`, …)
+for an exact jump. `/` searches the list.
 
 Keybindings and other settings live in `~/.config/normen/normen.conf`
 (created on first run). Law texts are cached in `~/.normen/`. Use
