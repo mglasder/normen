@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 
 from rich.console import Console
+from rich.style import Style
 from textual.widgets import Input, OptionList
 
 from normen.catalog import LawRef, resolve_law
@@ -17,6 +18,7 @@ from normen.tui import (
     NumberedItem,
     PickerScreen,
     ReaderScreen,
+    TabBar,
     window_range,
 )
 
@@ -33,6 +35,10 @@ def _config(cache_dir: Path, text: str | None = None) -> Config:
     if text is not None:
         path.write_text(text, encoding="utf-8")
     return Config(path)
+
+
+async def _tab(pilot, key: str) -> None:
+    await pilot.press("ctrl+n", key)
 
 
 def _app(cache_dir: Path, **kwargs) -> NormenApp:
@@ -66,6 +72,58 @@ def _big_library(cache_dir: Path, count: int = 80) -> LawLibrary:
         f"{body}</dokumente>"
     ).encode()
     return LawLibrary(cache_dir=cache_dir, downloader=lambda slug: xml)
+
+
+def test_menu_tab_is_always_leftmost(tmp_path: Path) -> None:
+    asyncio.run(_menu_is_pinned(tmp_path))
+
+
+async def _menu_is_pinned(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, PickerScreen)
+        assert app.screen.query_one(TabBar).display is True
+        assert app.screen.query_one(TabBar).region.y == 0
+        assert app.screen.query_one("#cmd").region.y == 1
+        assert "0:MENU*" in _tabs_plain(app)
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        assert isinstance(app.screen, ReaderScreen)
+        text = _tabs_plain(app)
+        assert "0:MENU" in text
+        assert "1:BGB*" in text
+        await pilot.press("q")
+        assert isinstance(app.screen, ReaderScreen)
+        await _tab(pilot, "m")
+        assert isinstance(app.screen, PickerScreen)
+        assert "0:MENU*" in _tabs_plain(app)
+        await _tab(pilot, "1")
+        await _wait_for_law(app, pilot)
+        await _tab(pilot, "0")
+        assert isinstance(app.screen, PickerScreen)
+        await _tab(pilot, "x")
+        assert len(app.tabs) == 1
+        assert isinstance(app.screen, PickerScreen)
+
+
+def test_prefix_m_does_not_open_a_law(tmp_path: Path) -> None:
+    asyncio.run(_prefix_m_is_not_enter(tmp_path))
+
+
+async def _prefix_m_is_not_enter(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, PickerScreen)
+        await _tab(pilot, "m")
+        assert isinstance(app.screen, PickerScreen)
+        assert app.tabs == []
+        await pilot.press("i")
+        await _tab(pilot, "m")
+        assert isinstance(app.screen, PickerScreen)
+        assert app.tabs == []
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        assert len(app.tabs) == 1
 
 
 def test_picker_hjkl_move_highlight(tmp_path: Path) -> None:
@@ -202,6 +260,38 @@ async def _reader_nav_keys(cache_dir: Path) -> None:
         assert screen.current.citation == first
         await pilot.press("l")
         assert screen.current.citation != first
+
+
+def test_jk_scroll_moves_current_so_shift_j_does_not_jump_back(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_scroll_advances_current(tmp_path))
+
+
+async def _scroll_advances_current(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test(size=(80, 16)) as pilot:
+        await _wait_for_law(app, pilot)
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        start = screen._current_index
+        start_cite = screen.current.citation if screen.current else None
+        for _ in range(40):
+            await pilot.press("j")
+            await pilot.pause()
+            if screen._current_index > start:
+                break
+        else:
+            raise AssertionError("j scroll did not advance the current paragraph")
+        locked = screen._current_index
+        locked_cite = screen.current.citation if screen.current else None
+        assert locked_cite != start_cite
+        await pilot.press("J")
+        assert screen._current_index == locked + 1
+        await pilot.press("K")
+        assert screen._current_index == locked
+        assert screen.current is not None
+        assert screen.current.citation == locked_cite
 
 
 def test_reader_shift_jk_jump_paragraph(tmp_path: Path) -> None:
@@ -433,11 +523,11 @@ async def _filter_second_hit(cache_dir: Path) -> None:
         assert screen.query_one("NormBlock.-current", NormBlock).norm.citation == "§ 433"
 
 
-def test_reopen_restores_last_paragraph(tmp_path: Path) -> None:
-    asyncio.run(_restore_position(tmp_path))
+def test_ctrl_1_restores_the_live_tab(tmp_path: Path) -> None:
+    asyncio.run(_restore_live_tab(tmp_path))
 
 
-async def _restore_position(cache_dir: Path) -> None:
+async def _restore_live_tab(cache_dir: Path) -> None:
     library = _library(cache_dir)
     app = _app(cache_dir, initial_law="bgb", library=library)
     async with app.run_test() as pilot:
@@ -447,17 +537,272 @@ async def _restore_position(cache_dir: Path) -> None:
         assert isinstance(screen, ReaderScreen)
         assert screen.current is not None
         assert screen.current.citation == "§ 433"
-        await pilot.press("q")
+        await _tab(pilot, "m")
         assert isinstance(app.screen, PickerScreen)
-        await pilot.press("i", "b", "g", "b", "enter")
+        assert len(app.tabs) == 1
+        await _tab(pilot, "1")
         await _wait_for_law(app, pilot)
         restored = app.screen
         assert isinstance(restored, ReaderScreen)
+        assert restored is screen
         assert restored.current is not None
         assert restored.current.citation == "§ 433"
         current = restored.query_one("NormBlock.-current", NormBlock)
         assert current.norm.citation == "§ 433"
+        await _tab(pilot, "0")
+        await pilot.press("i", "b", "g", "b", "enter")
+        await _wait_for_law(app, pilot)
+        fresh = app.screen
+        assert isinstance(fresh, ReaderScreen)
+        assert fresh is not restored
+        assert fresh.current is not None
+        assert fresh.current.citation != "§ 433"
+        assert len(app.tabs) == 2
         assert not (cache_dir / "state.json").exists()
+
+
+def test_opening_laws_creates_tabs_and_bar(tmp_path: Path) -> None:
+    asyncio.run(_open_two_tabs(tmp_path))
+
+
+async def _open_two_tabs(cache_dir: Path) -> None:
+    app = _app(cache_dir, library=_multi_library(cache_dir))
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        await _tab(pilot, "m")
+        assert isinstance(app.screen, PickerScreen)
+        assert len(app.tabs) == 1
+        await pilot.press("j", "enter")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        assert isinstance(app.screen, ReaderScreen)
+        assert app.screen.ref.shortcut == "GG"
+        assert len(app.tabs) == 2
+        assert [tab.ref.shortcut for tab in app.tabs] == ["BGB", "GG"]
+        assert app.active == 1
+        text = _tabs_plain(app)
+        assert "0:MENU" in text
+        assert "1:BGB" in text
+        assert "2:GG*" in text
+        assert not list(app.screen.query("Header"))
+        line = app.tab_line()
+        first = next(span for span in line.spans if "BGB" in line.plain[span.start:span.end])
+        second = next(span for span in line.spans if "GG" in line.plain[span.start:span.end])
+        assert line.plain[first.end:second.start] == " "
+        current = _tab_style_at(app, "2:GG*")
+        other = _tab_style_at(app, "1:BGB")
+        assert current.color is not None and current.color.triplet == (0x13, 0x1A, 0x21)
+        assert current.bgcolor is not None and current.bgcolor.triplet == (0x9C, 0xE5, 0xC0)
+        assert other.color is not None and other.color.triplet == (0xCE, 0xD4, 0xDF)
+        assert other.bgcolor is not None and other.bgcolor.triplet == (0x40, 0x47, 0x4E)
+
+
+def test_ctrl_n_n_cycles_and_1_jumps_keeping_position(tmp_path: Path) -> None:
+    asyncio.run(_cycle_and_jump_tabs(tmp_path))
+
+
+async def _cycle_and_jump_tabs(cache_dir: Path) -> None:
+    app = _app(cache_dir, library=_multi_library(cache_dir))
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        await pilot.press("4", "3", "3", "enter")
+        first = app.screen
+        assert isinstance(first, ReaderScreen)
+        assert first.current is not None
+        assert first.current.citation == "§ 433"
+        await _tab(pilot, "m")
+        await pilot.press("j", "enter")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        await _tab(pilot, "n")
+        assert isinstance(app.screen, PickerScreen)
+        await _tab(pilot, "n")
+        await _wait_for_law(app, pilot)
+        assert app.screen is first
+        assert first.current is not None
+        assert first.current.citation == "§ 433"
+        await _tab(pilot, "2")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        assert isinstance(app.screen, ReaderScreen)
+        assert app.screen.ref.shortcut == "GG"
+        await _tab(pilot, "1")
+        await _wait_for_law(app, pilot)
+        assert app.screen is first
+        assert first.current.citation == "§ 433"
+
+
+def test_ctrl_n_x_closes_tab_and_reopen_is_fresh(tmp_path: Path) -> None:
+    asyncio.run(_close_tab_fresh_reopen(tmp_path))
+
+
+async def _close_tab_fresh_reopen(cache_dir: Path) -> None:
+    app = _app(cache_dir, library=_multi_library(cache_dir))
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        await pilot.press("4", "3", "3", "enter")
+        bgb = app.screen
+        assert isinstance(bgb, ReaderScreen)
+        await _tab(pilot, "m")
+        await pilot.press("j", "enter")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        assert app.screen.ref.shortcut == "GG"
+        await _tab(pilot, "x")
+        assert isinstance(app.screen, PickerScreen)
+        assert len(app.tabs) == 1
+        assert app.tabs[0] is bgb
+        await _tab(pilot, "1")
+        await _wait_for_law(app, pilot)
+        assert app.screen is bgb
+        await _tab(pilot, "x")
+        assert isinstance(app.screen, PickerScreen)
+        assert len(app.tabs) == 0
+        assert "0:MENU*" in _tabs_plain(app)
+        await pilot.press("i", "b", "g", "b", "enter")
+        await _wait_for_law(app, pilot)
+        fresh = app.screen
+        assert isinstance(fresh, ReaderScreen)
+        assert fresh is not bgb
+        assert fresh.current is not None
+        assert fresh.current.citation != "§ 433"
+        assert len(app.tabs) == 1
+
+
+def test_ctrl_m_returns_to_menu_without_dropping_tabs(tmp_path: Path) -> None:
+    asyncio.run(_prefix_m_keeps_tabs(tmp_path))
+
+
+async def _prefix_m_keeps_tabs(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        await _tab(pilot, "m")
+        assert isinstance(app.screen, PickerScreen)
+        assert len(app.tabs) == 1
+        assert app.tabs[0].ref.shortcut == "BGB"
+
+
+def test_ctrl_digit_does_not_enter_para(tmp_path: Path) -> None:
+    asyncio.run(_prefix_blocks_para(tmp_path))
+
+
+async def _prefix_blocks_para(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        await pilot.press("ctrl+n")
+        assert str(screen.query_one("#mode").content) == "PREFIX"
+        await pilot.press("4")
+        assert screen.mode == "normal"
+        assert screen.query_one("#cmd", Input).value == ""
+        assert str(screen.query_one("#mode").content) == "NORMAL"
+        first = screen.current.citation if screen.current else None
+        await pilot.press("l")
+        assert screen.mode == "normal"
+        assert screen.current is not None
+        assert screen.current.citation != first
+
+
+def test_stale_tab_config_does_not_steal_n(tmp_path: Path) -> None:
+    asyncio.run(_stale_tab_config_keeps_n(tmp_path))
+
+
+async def _stale_tab_config_keeps_n(cache_dir: Path) -> None:
+    config = _config(
+        cache_dir,
+        "[tabs]\ntab_next = n\ntab_prev = p\ntab_close = x\ntab_menu = m\n",
+    )
+    app = _app(cache_dir, library=_multi_library(cache_dir), config=config)
+    async with app.run_test() as pilot:
+        await pilot.press("enter")
+        await _wait_for_law(app, pilot)
+        first = app.screen
+        await _tab(pilot, "m")
+        await pilot.press("j", "enter")
+        await _wait_for_law(app, pilot, resolve_law("gg"))
+        assert isinstance(app.screen, ReaderScreen)
+        await pilot.press("n")
+        assert app.screen is not first
+        assert isinstance(app.screen, ReaderScreen)
+        assert app.screen.ref.shortcut == "GG"
+        await _tab(pilot, "n")
+        assert isinstance(app.screen, PickerScreen)
+
+
+def test_ctrl_q_asks_then_y_quits(tmp_path: Path) -> None:
+    asyncio.run(_quit_confirm_yes(tmp_path))
+
+
+async def _quit_confirm_yes(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        await pilot.press("ctrl+q")
+        pos = app.screen.query_one("#pos")
+        assert "Quit?" in str(pos.content)
+        assert app.screen.query_one("#status").has_class("quit")
+        color = pos.styles.color
+        assert color is not None and color.rgb == (0xEF, 0x88, 0x91)
+        assert app.return_code is None
+        await pilot.press("y")
+        assert app.return_code == 0
+
+
+def test_ctrl_q_then_n_cancels(tmp_path: Path) -> None:
+    asyncio.run(_quit_confirm_no(tmp_path))
+
+
+async def _quit_confirm_no(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        await pilot.press("ctrl+q")
+        await pilot.press("n")
+        assert app.return_code is None
+        assert "Quit?" not in str(screen.query_one("#pos").content)
+        assert not screen.query_one("#status").has_class("quit")
+        first = screen.current.citation if screen.current else None
+        await pilot.press("l")
+        assert screen.mode == "normal"
+        assert screen.current is not None
+        assert screen.current.citation != first
+
+
+def test_stale_quit_q_does_not_quit(tmp_path: Path) -> None:
+    asyncio.run(_stale_q_stays(tmp_path))
+
+
+async def _stale_q_stays(cache_dir: Path) -> None:
+    config = _config(cache_dir, "[picker]\nquit = q\n[reader]\nback = q\n")
+    app = _app(cache_dir, initial_law="bgb", config=config)
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        await pilot.press("q")
+        assert app.return_code is None
+        assert isinstance(app.screen, ReaderScreen)
+        await pilot.press("ctrl+q")
+        assert "Quit?" in str(app.screen.query_one("#pos").content)
+        await pilot.press("escape")
+        assert app.return_code is None
+
+
+def test_ctrl_q_from_menu_asks(tmp_path: Path) -> None:
+    asyncio.run(_quit_from_menu(tmp_path))
+
+
+async def _quit_from_menu(cache_dir: Path) -> None:
+    app = _app(cache_dir)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, PickerScreen)
+        await pilot.press("ctrl+q")
+        assert "Quit?" in str(app.screen.query_one("#pos").content)
+        await pilot.press("escape")
+        assert app.return_code is None
+        assert isinstance(app.screen, PickerScreen)
 
 
 def test_fresh_instance_ignores_disk_state(tmp_path: Path) -> None:
@@ -500,6 +845,31 @@ async def _remap_paragraph_keys(cache_dir: Path) -> None:
         assert screen.current.citation == first
         await pilot.press("K")
         assert screen.current.citation == first
+
+
+def _multi_library(cache_dir: Path) -> LawLibrary:
+    bgb = (FIXTURES / "sample.xml").read_bytes()
+    gg = (FIXTURES / "gg_sample.xml").read_bytes()
+    return LawLibrary(
+        cache_dir=cache_dir,
+        downloader=lambda slug: gg if slug == "gg" else bgb,
+    )
+
+
+def _tabs_plain(app: NormenApp) -> str:
+    rendered = app.screen.query_one(TabBar).render()
+    return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+
+def _tab_style_at(app: NormenApp, needle: str) -> Style:
+    line = app.tab_line()
+    start = line.plain.index(needle)
+    style: Style | str = ""
+    for span in line.spans:
+        if span.start <= start < span.end:
+            style = span.style
+            break
+    return style if isinstance(style, Style) else Style.parse(str(style))
 
 
 def _screen_text(app: NormenApp) -> str:

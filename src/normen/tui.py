@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.screen import Screen
-from textual.widgets import Header, Input, OptionList, Static
+from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from normen.catalog import LAWS, LawRef, resolve_law
@@ -46,9 +47,11 @@ class CommandInput(Input):
     def check_consume_key(self, key: str, character: str | None) -> bool:
         screen = self.screen
         mode = getattr(screen, "mode", None)
-        if mode == "para":
+        if mode in {"normal", "para", None}:
             return False
         if mode == "search" and getattr(screen, "search_nav", False):
+            return False
+        if "+" in key and not key.startswith("shift+"):
             return False
         return character is not None and character.isprintable()
 
@@ -101,14 +104,42 @@ def _law_title(abbreviation: str, title: str) -> str:
     return f"{abbreviation}  {title}"
 
 
+def _law_option(ref: LawRef) -> Option:
+    return Option(f"{ref.shortcut:<8}{ref.title}", id=ref.slug)
+
+
 def _para_char(char: str) -> bool:
     return char.isalnum() or char in {"§", " ", "."}
+
+
+def _event_matches(event: events.Key, binding: str) -> bool:
+    wanted = {part.strip() for part in binding.split(",") if part.strip()}
+    if event.key in wanted:
+        return True
+    return event.character is not None and event.character in wanted
+
+
+def _is_yes_key(event: events.Key) -> bool:
+    if event.key in {"y", "Y"}:
+        return True
+    return event.character is not None and event.character.lower() == "y"
 
 
 def _status_bar() -> ComposeResult:
     with Horizontal(id="status"):
         yield Static("NORMAL", id="mode")
         yield Static("", id="pos")
+
+
+class TabBar(Static):
+    def __init__(self) -> None:
+        super().__init__("", id="tabs")
+
+    def on_mount(self) -> None:
+        app = self.app
+        if isinstance(app, NormenApp):
+            self.update(app.tab_line())
+            self.display = True
 
 
 class PickerScreen(Screen):
@@ -120,7 +151,6 @@ class PickerScreen(Screen):
         Binding("k,up", "move_up", "K", id="move_up", priority=True),
         Binding("l,right", "move_right", "L", id="move_right", priority=True),
         Binding("enter", "confirm", "Öffnen", id="confirm", priority=True),
-        Binding("q", "app.quit", "Beenden", id="quit", priority=True),
     ]
 
     def __init__(self) -> None:
@@ -128,22 +158,26 @@ class PickerScreen(Screen):
         self.mode = "normal"
         self.filtering = False
 
+    def on_mount(self) -> None:
+        self.title = "normen"
+        self.sub_title = ""
+        self.query_one("#laws", OptionList).add_options(
+            [_law_option(ref) for ref in LAWS]
+        )
+        self.query_one("#laws", OptionList).highlighted = 0
+        self._set_mode("normal")
+
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False, icon="")
+        yield TabBar()
         yield CommandInput(placeholder="", id="cmd")
         with Vertical(id="picker-body"):
             yield OptionList(id="laws")
         yield from _status_bar()
 
-    def on_mount(self) -> None:
-        law_list = self.query_one("#laws", OptionList)
-        law_list.add_options(
-            [Option(f"{ref.shortcut:<8}{ref.title}", id=ref.slug) for ref in LAWS]
-        )
-        law_list.highlighted = 0
-        self.title = "normen"
-        self.sub_title = ""
-        self._set_mode("normal")
+    def on_screen_resume(self) -> None:
+        app = self.app
+        if isinstance(app, NormenApp):
+            app.refresh_tabs()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if self.mode == "insert" and action not in INSERT_ONLY:
@@ -219,9 +253,7 @@ class PickerScreen(Screen):
     def _open(self, ref: LawRef) -> None:
         app = self.app
         assert isinstance(app, NormenApp)
-        app.push_screen(
-            ReaderScreen(ref, app.library, app.session, app.refresh_remote)
-        )
+        app.open_tab(ref)
 
 
 class ReaderScreen(Screen):
@@ -242,7 +274,6 @@ class ReaderScreen(Screen):
         Binding("ctrl+d", "page_down", show=False, id="page_down", priority=True),
         Binding("ctrl+u", "page_up", show=False, id="page_up", priority=True),
         Binding("enter", "confirm", "Öffnen", show=False, id="confirm", priority=True),
-        Binding("q", "back", "Zurück", id="back", priority=True),
     ] + [
         Binding(digit, f"type_digit('{digit}')", show=False, priority=True)
         for digit in "0123456789"
@@ -280,7 +311,7 @@ class ReaderScreen(Screen):
         return self.mode == "search"
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False, icon="")
+        yield TabBar()
         yield CommandInput(placeholder="", id="cmd")
         with ScrollableContainer(id="scroll"):
             yield Static(
@@ -288,6 +319,11 @@ class ReaderScreen(Screen):
             )
         yield OptionList(id="results")
         yield from _status_bar()
+
+    def on_screen_resume(self) -> None:
+        app = self.app
+        if isinstance(app, NormenApp):
+            app.refresh_tabs()
 
     def on_mount(self) -> None:
         self.title = _law_title(self.ref.shortcut, self.ref.title)
@@ -354,6 +390,8 @@ class ReaderScreen(Screen):
         self._current_block = None
         self._current_index = -1
         self._mounted = (0, 0)
+        if self.mode == "normal":
+            scroll.focus()
         self.call_after_refresh(self._apply_opening_position)
 
     def _apply_opening_position(self) -> None:
@@ -369,12 +407,6 @@ class ReaderScreen(Screen):
                 return
             self._run_query(query)
             return
-        saved = self.session.get(self.ref.slug)
-        if saved:
-            norm = lookup_norm(self.law, saved)
-            if norm is not None:
-                self._select_norm(norm)
-                return
         if self.law.norms:
             self._select_index(0, pin_top=True)
 
@@ -409,21 +441,23 @@ class ReaderScreen(Screen):
     def _sync_para(self) -> None:
         self.query_one("#cmd", CommandInput).value = self._para
 
-    def action_back(self) -> None:
-        self._remember_position()
-        self.app.pop_screen()
-
     def action_move_down(self) -> None:
         if self.mode == "search":
             self._step_result(1)
             return
-        self.query_one("#scroll", ScrollableContainer).scroll_down()
+        self.query_one("#scroll", ScrollableContainer).scroll_down(
+            animate=False, immediate=True
+        )
+        self._sync_current_to_viewport()
 
     def action_move_up(self) -> None:
         if self.mode == "search":
             self._step_result(-1)
             return
-        self.query_one("#scroll", ScrollableContainer).scroll_up()
+        self.query_one("#scroll", ScrollableContainer).scroll_up(
+            animate=False, immediate=True
+        )
+        self._sync_current_to_viewport()
 
     def _step_result(self, delta: int) -> None:
         results = self.query_one("#results", OptionList)
@@ -445,10 +479,16 @@ class ReaderScreen(Screen):
         self._step_norm(1)
 
     def action_page_down(self) -> None:
-        self.query_one("#scroll", ScrollableContainer).scroll_page_down()
+        self.query_one("#scroll", ScrollableContainer).scroll_page_down(
+            animate=False, immediate=True
+        )
+        self._sync_current_to_viewport()
 
     def action_page_up(self) -> None:
-        self.query_one("#scroll", ScrollableContainer).scroll_page_up()
+        self.query_one("#scroll", ScrollableContainer).scroll_page_up(
+            animate=False, immediate=True
+        )
+        self._sync_current_to_viewport()
 
     def action_goto_top(self) -> None:
         if self.law and self.law.norms:
@@ -639,7 +679,7 @@ class ReaderScreen(Screen):
                 return block
         return None
 
-    def _mark_current(self, block: NormBlock) -> None:
+    def _mark_current(self, block: NormBlock, *, pin: bool = True) -> None:
         same = self._current_block is block
         if not same:
             with self.app.batch_update():
@@ -647,7 +687,36 @@ class ReaderScreen(Screen):
                     self._current_block.remove_class("-current")
                 block.add_class("-current")
                 self._current_block = block
-        self.call_after_refresh(self._pin_current)
+        if pin:
+            self.call_after_refresh(self._pin_current)
+
+    def _adopt_index(self, index: int) -> None:
+        if self.law is None or not (0 <= index < len(self.law.norms)):
+            return
+        self._current_index = index
+        self.current = self.law.norms[index]
+        self._update_pos()
+        self._remember_position()
+        block = self._block_at(index)
+        if block is not None:
+            self._mark_current(block, pin=False)
+
+    def _sync_current_to_viewport(self) -> None:
+        if self.law is None:
+            return
+        scroll = self.query_one("#scroll", ScrollableContainer)
+        top = scroll.scroll_offset.y
+        passed: NormBlock | None = None
+        for block in sorted(self.query(NormBlock), key=lambda item: item.norm_index):
+            if block.virtual_region.y <= top:
+                passed = block
+            elif passed is not None:
+                break
+        if passed is None:
+            return
+        if passed.norm_index == self._current_index:
+            return
+        self._adopt_index(passed.norm_index)
 
     def _fill_window(self, index: int) -> None:
         if self.law is None:
@@ -741,28 +810,22 @@ class NormenApp(App[None]):
     TITLE = "normen"
     SUB_TITLE = ""
     ENABLE_COMMAND_PALETTE = False
+    BINDINGS = [
+        Binding("ctrl+n", "tab_prefix", "Tabs", id="tab_prefix", priority=True, show=False),
+        Binding("ctrl+q", "quit_ask", "Quit", id="quit", priority=True, show=False),
+    ]
     CSS = """
     Screen {
         background: #10171e;
         color: #ced4df;
     }
 
-    Header {
+    TabBar, #tabs {
         background: #131a21;
         color: #ced4df;
-        text-style: bold;
-    }
-
-    HeaderIcon, HeaderClockSpace {
-        display: none;
-        width: 0;
+        height: 1;
         padding: 0;
-    }
-
-    HeaderTitle {
-        content-align: left middle;
-        padding: 0 1;
-        width: 1fr;
+        width: 100%;
     }
 
     #cmd {
@@ -789,6 +852,10 @@ class NormenApp(App[None]):
     #status.insert, #status.search, #status.para {
         color: #10171e;
         background: #f5d595;
+    }
+
+    #status.quit #pos {
+        color: #ef8891;
     }
 
     #mode {
@@ -922,6 +989,7 @@ class NormenApp(App[None]):
         session: SessionStore | None = None,
         config: Config | None = None,
     ) -> None:
+        self.menu = PickerScreen()
         super().__init__()
         self.initial_law = initial_law
         self.initial_norm = initial_norm
@@ -929,9 +997,15 @@ class NormenApp(App[None]):
         self.library = library or LawLibrary()
         self.session = session or SessionStore()
         self.config = config or Config()
+        self.tabs: list[ReaderScreen] = []
+        self.active = -1
+        self.last = -1
+        self._tab_seq = 0
+        self._quit_pending = False
+        self._prefix = False
 
     def get_default_screen(self) -> Screen:
-        return PickerScreen()
+        return self.menu
 
     def on_mount(self) -> None:
         self.set_keymap(self.config.keymap())
@@ -942,12 +1016,245 @@ class NormenApp(App[None]):
         ref = resolve_law(self.initial_law)
         if ref is None:
             return
-        self.push_screen(
-            ReaderScreen(
-                ref,
-                self.library,
-                self.session,
-                self.refresh_remote,
-                self.initial_norm,
-            )
+        self.open_tab(ref, self.initial_norm)
+
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, events.Key) and self._consume_app_key(event):
+            return
+        await super().on_event(event)
+
+    def _consume_app_key(self, event: events.Key) -> bool:
+        if self._quit_pending:
+            event.prevent_default()
+            event.stop()
+            if _is_yes_key(event):
+                self.exit()
+            else:
+                self._cancel_quit()
+            return True
+        if event.key == "ctrl+q":
+            event.prevent_default()
+            event.stop()
+            if self._prefix:
+                self._disarm_prefix()
+            self._ask_quit()
+            return True
+        keys = self.config.keymap()
+        if self._prefix:
+            event.prevent_default()
+            event.stop()
+            if _event_matches(event, keys.get("tab_prefix", "ctrl+n")):
+                self._arm_prefix()
+                return True
+            self._run_prefix_suffix(event, keys)
+            return True
+        if _event_matches(event, keys.get("tab_prefix", "ctrl+n")):
+            event.prevent_default()
+            event.stop()
+            self._arm_prefix()
+            return True
+        return False
+
+    def action_tab_prefix(self) -> None:
+        self._arm_prefix()
+
+    def _arm_prefix(self) -> None:
+        self._prefix = True
+        try:
+            self.screen.query_one("#mode", Static).update("PREFIX")
+        except Exception:
+            pass
+
+    def _disarm_prefix(self) -> None:
+        self._prefix = False
+        self._restore_mode_label()
+
+    def _restore_mode_label(self) -> None:
+        screen = self.screen
+        try:
+            label = screen.query_one("#mode", Static)
+        except Exception:
+            return
+        mode = getattr(screen, "mode", "normal")
+        if mode == "insert":
+            label.update("INSERT")
+            return
+        label.update(MODE_LABELS.get(mode, str(mode).upper()))
+
+    def _run_prefix_suffix(self, event: events.Key, keys: dict[str, str]) -> None:
+        self._disarm_prefix()
+        if _event_matches(event, keys.get("tab_next", "n")):
+            self.next_tab()
+            return
+        if _event_matches(event, keys.get("tab_prev", "p")):
+            self.prev_tab()
+            return
+        if _event_matches(event, keys.get("tab_close", "x")):
+            self.close_tab()
+            return
+        if _event_matches(event, keys.get("tab_menu", "m")) or event.key == "0":
+            self.show_menu()
+            return
+        if event.key.isdigit():
+            self.action_tab_jump(int(event.key))
+
+    def action_quit_ask(self) -> None:
+        self._ask_quit()
+
+    def _ask_quit(self) -> None:
+        self._quit_pending = True
+        try:
+            self.screen.query_one("#status").add_class("quit")
+            self.screen.query_one("#pos", Static).update("Quit? (y)")
+        except Exception:
+            pass
+
+    def _cancel_quit(self) -> None:
+        self._quit_pending = False
+        screen = self.screen
+        try:
+            screen.query_one("#status").remove_class("quit")
+            if isinstance(screen, ReaderScreen):
+                screen._update_pos()
+            else:
+                screen.query_one("#pos", Static).update("")
+        except Exception:
+            pass
+
+    def action_tab_next(self) -> None:
+        self.next_tab()
+
+    def action_tab_prev(self) -> None:
+        self.prev_tab()
+
+    def action_tab_close(self) -> None:
+        self.close_tab()
+
+    def action_tab_menu(self) -> None:
+        self.show_menu()
+
+    def action_tab_jump(self, number: int) -> None:
+        index = int(number)
+        if index <= 0:
+            self.show_menu()
+            return
+        self.switch_tab(index - 1)
+
+    def tab_line(self) -> Text:
+        line = Text()
+        menu_marker = "*" if self.active < 0 else ("-" if self.last < 0 else "")
+        menu_style = (
+            "#131a21 on #9ce5c0" if self.active < 0 else "#ced4df on #40474e"
         )
+        line.append(f" 0:MENU{menu_marker} ", menu_style)
+        for index, tab in enumerate(self.tabs):
+            line.append(" ")
+            marker = "*" if index == self.active else ("-" if index == self.last else "")
+            label = f" {index + 1}:{tab.ref.shortcut}{marker} "
+            if index == self.active:
+                line.append(label, style="#131a21 on #9ce5c0")
+            else:
+                line.append(label, style="#ced4df on #40474e")
+        return line
+
+    def refresh_tabs(self) -> None:
+        line = self.tab_line()
+        try:
+            for bar in self.screen.query(TabBar):
+                bar.display = True
+                bar.update(line)
+        except Exception:
+            pass
+
+    def show_menu(self) -> None:
+        if self.screen is self.menu:
+            self.refresh_tabs()
+            return
+        if self.active >= 0:
+            self.last = self.active
+        self.active = -1
+        self.pop_screen()
+        self.refresh_tabs()
+
+    def _show_law(self, screen: ReaderScreen) -> None:
+        if self.screen is screen:
+            return
+        if self.screen is self.menu:
+            self.push_screen(screen)
+            return
+        self.switch_screen(screen)
+
+    def open_tab(self, ref: LawRef, initial_query: str | None = None) -> None:
+        screen = ReaderScreen(
+            ref,
+            self.library,
+            self.session,
+            self.refresh_remote,
+            initial_query,
+        )
+        name = f"tab-{self._tab_seq}"
+        self._tab_seq += 1
+        self.install_screen(screen, name)
+        self.last = self.active
+        self.tabs.append(screen)
+        self.active = len(self.tabs) - 1
+        self._show_law(screen)
+        self.refresh_tabs()
+
+    def switch_tab(self, index: int) -> None:
+        if not (0 <= index < len(self.tabs)):
+            self.refresh_tabs()
+            return
+        target = self.tabs[index]
+        if self.screen is target:
+            self.refresh_tabs()
+            return
+        if index != self.active:
+            self.last = self.active
+            self.active = index
+        self._show_law(target)
+        self.refresh_tabs()
+
+    def _goto_slot(self, slot: int) -> None:
+        if slot <= 0:
+            self.show_menu()
+            return
+        self.switch_tab(slot - 1)
+
+    def next_tab(self) -> None:
+        slots = 1 + len(self.tabs)
+        current = 0 if self.active < 0 else self.active + 1
+        self._goto_slot((current + 1) % slots)
+
+    def prev_tab(self) -> None:
+        slots = 1 + len(self.tabs)
+        current = 0 if self.active < 0 else self.active + 1
+        self._goto_slot((current - 1) % slots)
+
+    def close_tab(self) -> None:
+        if self.active < 0 or not self.tabs:
+            self.refresh_tabs()
+            return
+        closing_i = self.active
+        closing = self.tabs[closing_i]
+        showing = self.screen is closing
+        go_menu = self.last < 0 or len(self.tabs) == 1
+        next_i = -1
+        if not go_menu and self.last != closing_i and 0 <= self.last < len(self.tabs):
+            next_i = self.last - (1 if self.last > closing_i else 0)
+        elif not go_menu:
+            next_i = closing_i if closing_i < len(self.tabs) - 1 else closing_i - 1
+        self.tabs.pop(closing_i)
+        if go_menu or next_i < 0:
+            self.active = -1
+            self.last = -1
+            if showing:
+                self.pop_screen()
+        else:
+            self.active = next_i
+            self.last = -1
+            if showing:
+                self._show_law(self.tabs[next_i])
+        if self.is_screen_installed(closing):
+            self.uninstall_screen(closing)
+        self.refresh_tabs()

@@ -13,7 +13,6 @@ DEFAULT_KEYS = {
     "move_up": "k,up",
     "move_right": "l,right",
     "confirm": "enter",
-    "quit": "q",
     "enter_search": "/",
     "paragraph_prev": "K,shift+k",
     "paragraph_next": "J,shift+j",
@@ -23,7 +22,12 @@ DEFAULT_KEYS = {
     "prev_hit": "shift+n",
     "page_down": "ctrl+d",
     "page_up": "ctrl+u",
-    "back": "q",
+    "tab_prefix": "ctrl+n",
+    "tab_next": "n",
+    "tab_prev": "p",
+    "tab_close": "x",
+    "tab_menu": "m",
+    "quit": "ctrl+q",
 }
 
 DEFAULT_TEXT = """\
@@ -38,9 +42,7 @@ move_down = j,down
 move_up = k,up
 move_right = l,right
 confirm = enter
-
-[picker]
-quit = q
+quit = ctrl+q
 
 [reader]
 enter_search = /
@@ -52,7 +54,13 @@ next_hit = n
 prev_hit = shift+n
 page_down = ctrl+d
 page_up = ctrl+u
-back = q
+
+[tabs]
+tab_prefix = ctrl+n
+tab_next = n
+tab_prev = p
+tab_close = x
+tab_menu = m
 """
 
 
@@ -99,9 +107,18 @@ class Config:
         overlay.update(self.section("keys"))
         overlay.update(self.section("picker"))
         overlay.update(self.section("reader"))
+        overlay.update(self.section("tabs"))
         if "enter_insert" in overlay and "enter_para" not in overlay:
             overlay["enter_para"] = overlay["enter_insert"]
         resolved.update(overlay)
+        prefix = resolved.get("tab_prefix", DEFAULT_KEYS["tab_prefix"])
+        if not any("+" in part.strip() for part in prefix.split(",") if part.strip()):
+            resolved["tab_prefix"] = DEFAULT_KEYS["tab_prefix"]
+        quit_key = resolved.get("quit", DEFAULT_KEYS["quit"])
+        if not any("+" in part.strip() for part in quit_key.split(",") if part.strip()):
+            resolved["quit"] = DEFAULT_KEYS["quit"]
+        for name in ("tab_next", "tab_prev", "tab_close", "tab_menu"):
+            resolved[name] = _tab_suffix(resolved.get(name, ""), DEFAULT_KEYS[name])
         resolved["enter_insert"] = resolved["enter_para"]
         para_keys = {
             key.strip()
@@ -118,6 +135,19 @@ class Config:
             if kept:
                 resolved[name] = ",".join(kept)
         return resolved
+
+
+def _tab_suffix(value: str, default: str) -> str:
+    parts = []
+    for part in value.split(","):
+        key = part.strip()
+        if not key:
+            continue
+        if "+" in key:
+            key = key.rsplit("+", 1)[-1]
+        if key:
+            parts.append(key)
+    return ",".join(parts) if parts else default
 
 
 def _clean(value: str) -> str:

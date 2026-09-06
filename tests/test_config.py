@@ -8,6 +8,12 @@ def test_missing_file_uses_defaults(tmp_path: Path) -> None:
     keys = config.keymap()
     assert keys["paragraph_prev"] == "K,shift+k"
     assert keys["paragraph_next"] == "J,shift+j"
+    assert keys["tab_prefix"] == "ctrl+n"
+    assert keys["tab_next"] == "n"
+    assert keys["tab_prev"] == "p"
+    assert keys["tab_close"] == "x"
+    assert keys["tab_menu"] == "m"
+    assert keys["quit"] == "ctrl+q"
     assert keys["move_left"] == DEFAULT_KEYS["move_left"]
 
 
@@ -46,6 +52,45 @@ def test_paragraph_keys_are_removed_from_line_scroll(tmp_path: Path) -> None:
     assert "K" not in keys["move_up"].split(",")
     assert keys["paragraph_next"] == "J"
     assert keys["paragraph_prev"] == "K"
+
+
+def test_tab_suffixes_may_be_unmodified(tmp_path: Path) -> None:
+    path = tmp_path / "normen.conf"
+    path.write_text(
+        "[tabs]\ntab_next = n\ntab_prev = p\ntab_close = x\ntab_menu = m\n",
+        encoding="utf-8",
+    )
+    keys = Config(path).keymap()
+    assert keys["tab_prefix"] == "ctrl+n"
+    assert keys["tab_next"] == "n"
+    assert keys["tab_prev"] == "p"
+    assert keys["tab_close"] == "x"
+    assert keys["tab_menu"] == "m"
+
+
+def test_chord_style_tab_suffixes_are_normalized(tmp_path: Path) -> None:
+    path = tmp_path / "normen.conf"
+    path.write_text(
+        "[tabs]\ntab_next = ctrl+n\ntab_prev = ctrl+p\ntab_close = ctrl+x\ntab_menu = ctrl+m\n",
+        encoding="utf-8",
+    )
+    keys = Config(path).keymap()
+    assert keys["tab_next"] == "n"
+    assert keys["tab_prev"] == "p"
+    assert keys["tab_close"] == "x"
+    assert keys["tab_menu"] == "m"
+
+
+def test_stale_quit_without_modifier_is_ignored(tmp_path: Path) -> None:
+    path = tmp_path / "normen.conf"
+    path.write_text("[picker]\nquit = q\n", encoding="utf-8")
+    assert Config(path).keymap()["quit"] == "ctrl+q"
+
+
+def test_modified_tab_keys_are_kept(tmp_path: Path) -> None:
+    path = tmp_path / "normen.conf"
+    path.write_text("[tabs]\ntab_prefix = alt+n\n", encoding="utf-8")
+    assert Config(path).keymap()["tab_prefix"] == "alt+n"
 
 
 def test_ensure_file_writes_defaults_once(tmp_path: Path) -> None:
