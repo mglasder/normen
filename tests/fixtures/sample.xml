@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dokumente SYSTEM "http://www.gesetze-im-internet.de/dtd/1.01/gii-norm.dtd">
+<dokumente builddate="20260506174650" doknr="TEST">
+  <norm doknr="HEADER">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <langue>Bürgerliches Gesetzbuch</langue>
+    </metadaten>
+    <textdaten/>
+  </norm>
+  <norm doknr="TOC">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <enbez>Inhaltsübersicht</enbez>
+    </metadaten>
+    <textdaten/>
+  </norm>
+  <norm doknr="BOOK">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <gliederungseinheit>
+        <gliederungsbez>Buch 1</gliederungsbez>
+        <gliederungstitel>Allgemeiner Teil</gliederungstitel>
+      </gliederungseinheit>
+    </metadaten>
+    <textdaten><text format="XML"><Content><P/></Content></text></textdaten>
+  </norm>
+  <norm doknr="P1">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <enbez>§ 1</enbez>
+      <titel format="parat">Beginn der Rechtsfähigkeit</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>Die Rechtsfähigkeit des Menschen beginnt mit der Vollendung der Geburt.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+  <norm doknr="RANGE">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <enbez>(XXXX) §§ 3 bis 6</enbez>
+      <titel format="parat">(weggefallen)</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML"><Content><P/></Content></text>
+    </textdaten>
+  </norm>
+  <norm doknr="P31A">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <enbez>§ 31a</enbez>
+      <titel format="XML">Haftung von Organmitgliedern</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>(1) Organmitglieder haften nur bei Vorsatz oder grober Fahrlässigkeit.</P>
+          <P>(2) Sie können Befreiung von der Verbindlichkeit verlangen.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+  <norm doknr="P433">
+    <metadaten>
+      <jurabk>BGB</jurabk>
+      <enbez>§ 433</enbez>
+      <titel format="parat">Vertragstypische Pflichten beim Kaufvertrag</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>(1) Durch den Kaufvertrag wird der Verkäufer einer Sache verpflichtet, dem Käufer die Sache zu übergeben.</P>
+          <P>(2) Der Käufer ist verpflichtet, den vereinbarten Kaufpreis zu zahlen.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+</dokumente>

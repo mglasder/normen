@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dokumente builddate="20260506174650" doknr="GGTEST">
+  <norm doknr="HEADER">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <langue>Grundgesetz für die Bundesrepublik Deutschland</langue>
+    </metadaten>
+    <textdaten/>
+  </norm>
+  <norm doknr="SEC1">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <gliederungseinheit>
+        <gliederungskennzahl>010</gliederungskennzahl>
+        <gliederungsbez>I.</gliederungsbez>
+        <gliederungstitel>Die Grundrechte</gliederungstitel>
+      </gliederungseinheit>
+    </metadaten>
+    <textdaten>
+      <text format="XML"><Content><P/></Content></text>
+    </textdaten>
+  </norm>
+  <norm doknr="ART1">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <enbez>Art 1</enbez>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>(1) Die Würde des Menschen ist unantastbar. Sie zu achten und zu schützen ist Verpflichtung aller staatlichen Gewalt.</P>
+          <P>(2) Das Deutsche Volk bekennt sich zu den Menschenrechten.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+  <norm doknr="ART20">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <enbez>Art 20</enbez>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>(1) Die Bundesrepublik Deutschland ist ein demokratischer und sozialer Bundesstaat.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+  <norm doknr="ART74">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <enbez>Art 74</enbez>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>(1) Die konkurrierende Gesetzgebung erstreckt sich auf folgende Gebiete: <DL Font="normal" Type="arabic"><DT>1.</DT><DD Font="normal"><LA Size="normal">das bürgerliche Recht;</LA></DD><DT>2.</DT><DD Font="normal"><LA Size="normal">das Personenstandswesen;</LA></DD><DT>19a.</DT><DD Font="normal"><LA Size="normal">die wirtschaftliche Sicherung der Krankenhäuser;</LA></DD></DL></P>
+          <P>(2) Durch Bundesgesetz können Gerichtskosten geregelt werden.</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+  <norm doknr="ANHANG">
+    <metadaten>
+      <jurabk>GG</jurabk>
+      <enbez>Anhang EV</enbez>
+    </metadaten>
+    <textdaten>
+      <text format="XML">
+        <Content>
+          <P>Einigungsvertrag</P>
+        </Content>
+      </text>
+    </textdaten>
+  </norm>
+</dokumente>
