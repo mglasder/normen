@@ -16,6 +16,56 @@ LAWS: tuple[LawRef, ...] = (
     LawRef("GG", "gg", "Grundgesetz für die Bundesrepublik Deutschland"),
     LawRef("VwGO", "vwgo", "Verwaltungsgerichtsordnung"),
     LawRef("VwVfG", "vwvfg", "Verwaltungsverfahrensgesetz", aliases=("vwvwfg",)),
+    LawRef("BVerfGG", "bverfgg", "Gesetz über das Bundesverfassungsgericht"),
+    LawRef(
+        "GOBT",
+        "btgo_2025",
+        "Geschäftsordnung des Deutschen Bundestages",
+        aliases=("gobt", "btgo", "go-bt"),
+    ),
+    LawRef(
+        "GOBR",
+        "brgo_2025",
+        "Geschäftsordnung des Bundesrates",
+        aliases=("gobr", "brgo", "go-br"),
+    ),
+    LawRef(
+        "PartG",
+        "partg",
+        "Gesetz über die politischen Parteien",
+        aliases=("parteig", "parteiengesetz", "parteiegesetz"),
+    ),
+    LawRef(
+        "VereinsG",
+        "vereinsg",
+        "Gesetz zur Regelung des öffentlichen Vereinsrechts",
+        aliases=("vereinsgesetz",),
+    ),
+    LawRef(
+        "VersammlG",
+        "versammlg",
+        "Gesetz über Versammlungen und Aufzüge",
+        aliases=("versammlungsgesetz", "versammunglusgesetzt"),
+    ),
+    LawRef("BauGB", "bbaug", "Baugesetzbuch", aliases=("bbaug", "bbau")),
+    LawRef("BauNVO", "baunvo", "Baunutzungsverordnung"),
+    LawRef(
+        "VwZG",
+        "vwzg_2005",
+        "Verwaltungszustellungsgesetz",
+        aliases=("vwzg",),
+    ),
+    LawRef("VwVG", "vwvg", "Verwaltungs-Vollstreckungsgesetz"),
+    LawRef("StGB", "stgb", "Strafgesetzbuch"),
+    LawRef("ZPO", "zpo", "Zivilprozessordnung"),
+    LawRef("StPO", "stpo", "Strafprozeßordnung"),
+    LawRef("HGB", "hgb", "Handelsgesetzbuch"),
+    LawRef(
+        "EGBGB",
+        "bgbeg",
+        "Einführungsgesetz zum Bürgerlichen Gesetzbuche",
+        aliases=("egbgb", "bgbeg"),
+    ),
 )
 
 

@@ -106,7 +106,7 @@ def _law_title(abbreviation: str, title: str) -> str:
 
 def _law_option(ref: LawRef, query: str = "") -> Option:
     prompt = Text()
-    prompt.append_text(highlight_text(f"{ref.shortcut:<8}", query))
+    prompt.append_text(highlight_text(f"{ref.shortcut:<10}", query))
     prompt.append_text(highlight_text(ref.title, query))
     return Option(prompt, id=ref.slug)
 

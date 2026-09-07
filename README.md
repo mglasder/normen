@@ -3,7 +3,10 @@
 Vim-style CLI to search and read German law from
 [gesetze-im-internet.de](https://www.gesetze-im-internet.de/).
 
-Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**.
+Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
+**GOBT**, **GOBR**, **PartG**, **VereinsG**, **VersammlG**, **BauGB**,
+**BauNVO**, **VwZG**, **VwVG**, **StGB**, **ZPO**, **StPO**, **HGB**,
+**EGBGB**.
 
 ## Usage
 

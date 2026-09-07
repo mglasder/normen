@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.style import Style
 from textual.widgets import Input, OptionList
 
-from normen.catalog import LawRef, resolve_law
+from normen.catalog import LAWS, LawRef, resolve_law
 from normen.config import Config
 from normen.fetch import LawLibrary
 from normen.tui import (
@@ -456,7 +456,7 @@ async def _menu_search_jk(cache_dir: Path) -> None:
         await pilot.press("escape")
         await pilot.press("slash", "v", "w")
         await pilot.pause()
-        assert _picker_slugs(screen) == ["vwgo", "vwvfg"]
+        assert _picker_slugs(screen) == ["vwgo", "vwvfg", "vwzg_2005", "vwvg"]
         await pilot.press("enter")
         assert screen.mode == "search"
         assert screen.search_nav is True
@@ -499,11 +499,11 @@ async def _menu_search_esc(cache_dir: Path) -> None:
         assert isinstance(screen, PickerScreen)
         await pilot.press("slash", "g", "g")
         await pilot.pause()
-        assert _picker_slugs(screen) == ["gg"]
+        assert _picker_slugs(screen) == ["gg", "bverfgg"]
         await pilot.press("escape")
         assert screen.mode == "normal"
         assert str(screen.query_one("#mode").content) == "NORMAL"
-        assert _picker_slugs(screen) == ["bgb", "gg", "vwgo", "vwvfg"]
+        assert _picker_slugs(screen) == [law.slug for law in LAWS]
         assert screen.query_one("#cmd", Input).value == ""
 
 
@@ -521,7 +521,7 @@ async def _menu_search_empty(cache_dir: Path) -> None:
         assert _picker_slugs(screen) == []
         await pilot.press("enter")
         assert screen.mode == "normal"
-        assert _picker_slugs(screen) == ["bgb", "gg", "vwgo", "vwvfg"]
+        assert _picker_slugs(screen) == [law.slug for law in LAWS]
 
 
 def test_slash_filters_paragraphs_and_enter_jumps(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument(
         "law",
         nargs="?",
-        help="Kürzel, z.B. BGB, GG, VwGO, VwVfG",
+        help="Kürzel, z.B. BGB, GG, StGB, VwGO",
     )
     parser.add_argument(
         "norm",
