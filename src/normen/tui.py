@@ -55,6 +55,19 @@ class CommandInput(Input):
             return False
         return character is not None and character.isprintable()
 
+    async def _on_key(self, event: events.Key) -> None:
+        mode = getattr(self.screen, "mode", None)
+        if mode not in {"normal", "para", None}:
+            await super()._on_key(event)
+            return
+        if not (event.is_printable or event.key == "backspace"):
+            return
+        event.stop()
+        event.prevent_default()
+        handler = getattr(self.screen, "on_para_key", None)
+        if mode == "para" and handler is not None:
+            handler(event)
+
 
 class NumberedItem(Horizontal):
     def __init__(self, marker: str, text: str) -> None:
@@ -417,6 +430,9 @@ class ReaderScreen(Screen):
         return True
 
     def on_key(self, event: events.Key) -> None:
+        self.on_para_key(event)
+
+    def on_para_key(self, event: events.Key) -> None:
         if self.mode != "para":
             return
         if event.key == "backspace":
@@ -425,7 +441,12 @@ class ReaderScreen(Screen):
             self._sync_para()
             return
         char = event.character
-        if char and _para_char(char) and not char.isdigit():
+        if (
+            char
+            and _para_char(char)
+            and not char.isdigit()
+            and any(part.isdigit() for part in self._para)
+        ):
             event.stop()
             self._para += char
             self._sync_para()
@@ -511,7 +532,9 @@ class ReaderScreen(Screen):
         self._sync_para()
 
     def _sync_para(self) -> None:
-        self.query_one("#cmd", CommandInput).value = self._para
+        inp = self.query_one("#cmd", CommandInput)
+        inp.value = self._para
+        inp.cursor_position = len(self._para)
 
     def action_move_down(self) -> None:
         if self.mode == "search":
@@ -633,6 +656,7 @@ class ReaderScreen(Screen):
         if mode == "para":
             bar.add_class(mode)
             inp.focus()
+            inp.action_end()
             return
         inp.blur()
         self.query_one("#scroll", ScrollableContainer).focus()

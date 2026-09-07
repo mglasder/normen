@@ -50,6 +50,19 @@ def test_full_text_search_is_case_insensitive() -> None:
     assert hits[0].in_title is False
 
 
+def test_search_citation_query_ranks_exact_lettered_match_first() -> None:
+    law = Law(
+        abbreviation="StGB",
+        title="Test",
+        norms=(
+            Norm("§ 113", "Widerstand", "widerstand gegen vollstreckungsbeamte", (CitationKey(113),)),
+            Norm("§ 113a", "Tätlicher Angriff", "taetlicher angriff auf vollstreckungsbeamte", (CitationKey(113, "a"),)),
+        ),
+    )
+    hits = search_norms(law, "113a")
+    assert [hit.norm.citation for hit in hits][0] == "§ 113a"
+
+
 def test_search_results_sorted_by_norm_number() -> None:
     law = Law(
         abbreviation="BGB",

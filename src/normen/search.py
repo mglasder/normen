@@ -42,6 +42,7 @@ def search_norms(law: Law, query: str) -> list[SearchHit]:
     if not needle:
         return []
 
+    exact = lookup_norm(law, needle) if parse_citation_query(needle) else None
     folded = needle.casefold()
     hits: list[SearchHit] = []
     for norm in law.norms:
@@ -61,6 +62,24 @@ def search_norms(law: Law, query: str) -> list[SearchHit]:
                 score=float(score),
             )
         )
+    if exact is not None:
+        hits = [
+            hit
+            for hit in hits
+            if hit.norm is not exact and hit.norm.citation != exact.citation
+        ]
+        hits.insert(
+            0,
+            SearchHit(
+                norm=exact,
+                in_title=True,
+                preview=make_preview(exact, needle),
+                score=100.0,
+            ),
+        )
+        rest = hits[1:]
+        rest.sort(key=lambda hit: _norm_number_key(hit.norm))
+        return [hits[0], *rest]
     hits.sort(key=lambda hit: _norm_number_key(hit.norm))
     return hits
 

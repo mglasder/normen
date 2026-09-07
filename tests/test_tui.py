@@ -215,6 +215,55 @@ async def _jump_to_433(cache_dir: Path) -> None:
         assert screen.query_one("NormBlock.-current", NormBlock).norm.citation == "§ 433"
 
 
+def test_reader_jumps_to_lettered_paragraph(tmp_path: Path) -> None:
+    asyncio.run(_jump_to_31a(tmp_path))
+
+
+async def _jump_to_31a(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        await pilot.press("3", "1")
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        assert screen.mode == "para"
+        cmd = screen.query_one("#cmd", Input)
+        assert cmd.value == "31"
+        assert cmd.cursor_position == 2
+        await pilot.press("a")
+        assert cmd.value == "31a"
+        assert cmd.cursor_position == 3
+        await pilot.press("enter")
+        assert screen.current is not None
+        assert screen.current.citation == "§ 31a"
+        assert screen.mode == "normal"
+        assert str(screen.query_one("#pos").content) == "31a:433"
+        assert screen.query_one("NormBlock.-current", NormBlock).norm.citation == "§ 31a"
+
+
+def test_slash_search_lettered_citation_is_first(tmp_path: Path) -> None:
+    asyncio.run(_slash_31a(tmp_path))
+
+
+async def _slash_31a(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="bgb")
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot)
+        await pilot.press("slash", "3", "1", "a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        assert screen.mode == "search"
+        assert screen.query_one("#cmd", Input).value == "31a"
+        assert [hit.norm.citation for hit in screen.hits][0] == "§ 31a"
+        await pilot.press("enter")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen.mode == "normal"
+        assert screen.current is not None
+        assert screen.current.citation == "§ 31a"
+
+
 def test_reader_mounts_only_a_window_of_norms(tmp_path: Path) -> None:
     asyncio.run(_windowed_reader(tmp_path))
 
