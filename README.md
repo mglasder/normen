@@ -10,6 +10,17 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 
 ## Usage
 
+Rust (current):
+
+```bash
+cargo run
+cargo test
+```
+
+Or jump straight in: `cargo run -- bgb`, `cargo run -- BGB 433`, `cargo run -- gg /würde`.
+
+Python (previous implementation):
+
 ```bash
 uv sync
 uv run normen
@@ -79,5 +90,6 @@ Keybindings and other settings live in `~/.config/normen/normen.conf`
 `--refresh` to download the laws again.
 
 ```bash
+cargo test
 uv run pytest
 ```
