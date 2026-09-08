@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::catalog::{resolve_law, LawRef};
@@ -73,6 +73,7 @@ pub struct App {
     active: i32,
     last: i32,
     prefix: bool,
+    help: bool,
     quit_pending: bool,
     pub should_quit: bool,
     refresh: bool,
@@ -98,6 +99,7 @@ impl App {
             active: -1,
             last: -1,
             prefix: false,
+            help: false,
             quit_pending: false,
             should_quit: false,
             refresh,
@@ -161,6 +163,21 @@ impl App {
                 self.quit_pending = false;
             }
             return;
+        }
+        if self.help {
+            if self.matches(key, "quit") || matches!(key, Key::Ctrl('q')) {
+                self.help = false;
+                self.quit_pending = true;
+                return;
+            }
+            self.help = false;
+            return;
+        }
+        if self.matches(key, "help") || key == Key::Char('?') {
+            if self.screen_mode() == Mode::Normal && !self.prefix {
+                self.help = true;
+                return;
+            }
         }
         if self.matches(key, "quit") || matches!(key, Key::Ctrl('q')) {
             if self.prefix {
@@ -405,11 +422,11 @@ impl App {
                     return;
                 }
                 if move_down {
-                    tab.move_hit(1);
+                    tab.move_hit(1, card_width, view_height);
                     return;
                 }
                 if move_up {
-                    tab.move_hit(-1);
+                    tab.move_hit(-1, card_width, view_height);
                     return;
                 }
                 if confirm {
@@ -461,11 +478,11 @@ impl App {
                     return;
                 }
                 if move_down {
-                    tab.move_down(card_width, view_height);
+                    tab.scroll_by(1, card_width, view_height);
                     return;
                 }
                 if move_up {
-                    tab.move_up(card_width, view_height);
+                    tab.scroll_by(-1, card_width, view_height);
                     return;
                 }
                 if page_down {
@@ -651,8 +668,20 @@ impl App {
         self.draw_cmd(frame, chunks[1]);
         self.body_width = chunks[2].width;
         self.body_height = chunks[2].height;
+        if !self.on_menu() {
+            let card_width = self.reader_card_width();
+            let view_height = self.reader_view_height();
+            if let Some(tab) = self.current_tab_mut() {
+                if tab.mode == Mode::Search {
+                    tab.ensure_hit_visible(card_width, view_height);
+                }
+            }
+        }
         self.draw_body(frame, chunks[2]);
         self.draw_status(frame, chunks[3]);
+        if self.help {
+            self.draw_help(frame, area);
+        }
     }
 
     fn draw_cmd(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -669,7 +698,7 @@ impl App {
     }
 
     fn show_cmd_cursor(&self) -> bool {
-        if self.prefix || self.quit_pending {
+        if self.prefix || self.quit_pending || self.help {
             return false;
         }
         match self.screen_mode() {
@@ -722,14 +751,7 @@ impl App {
             .menu
             .filtered
             .iter()
-            .map(|law| {
-                let label = format!("{:<10}{}", law.shortcut, law.title);
-                if self.menu.mode == Mode::Search {
-                    ListItem::new(styled_to_line(&highlight_text(&label, query)))
-                } else {
-                    ListItem::new(label)
-                }
-            })
+            .map(|law| ListItem::new(menu_row(law, query, self.menu.mode == Mode::Search)))
             .collect();
         let mut state = ListState::default();
         if !items.is_empty() {
@@ -760,16 +782,8 @@ impl App {
         }
         let card_width = inner.width.saturating_sub(1);
         let query = tab.cmd.trim_start_matches('/');
-        let start = search_view_start(
-            &tab.hits,
-            tab.hit_highlight,
-            query,
-            &tab.law.abbreviation,
-            card_width,
-            inner.height,
-        );
         let mut y = inner.y;
-        for (index, hit) in tab.hits.iter().enumerate().skip(start) {
+        for (index, hit) in tab.hits.iter().enumerate().skip(tab.search_origin) {
             if y >= inner.bottom() {
                 break;
             }
@@ -871,9 +885,15 @@ impl App {
             ""
         };
         let menu_style = if self.active < 0 {
-            Style::default().fg(SURFACE).bg(PRIMARY)
+            Style::default()
+                .fg(SURFACE)
+                .bg(PRIMARY)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(FOREGROUND).bg(BORDER)
+            Style::default()
+                .fg(FOREGROUND)
+                .bg(BORDER)
+                .add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(format!(" 0:MENU{menu_marker} "), menu_style));
         for (index, tab) in self.tabs.iter().enumerate() {
@@ -891,9 +911,15 @@ impl App {
                 shortcut = tab.shortcut()
             );
             let style = if index as i32 == self.active {
-                Style::default().fg(SURFACE).bg(PRIMARY)
+                Style::default()
+                    .fg(SURFACE)
+                    .bg(PRIMARY)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(FOREGROUND).bg(BORDER)
+                Style::default()
+                    .fg(FOREGROUND)
+                    .bg(BORDER)
+                    .add_modifier(Modifier::BOLD)
             };
             spans.push(Span::styled(label, style));
         }
@@ -901,19 +927,7 @@ impl App {
     }
 
     fn draw_status(&self, frame: &mut Frame<'_>, area: Rect) {
-        let typing = matches!(self.screen_mode(), Mode::Search | Mode::Para | Mode::Insert)
-            && !self.prefix;
-        let bar_style = if typing {
-            Style::default()
-                .bg(ACCENT)
-                .fg(SEARCH_FG)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .bg(SURFACE)
-                .fg(PRIMARY)
-                .add_modifier(Modifier::BOLD)
-        };
+        let bar_style = Style::default().bg(SURFACE).fg(FOREGROUND);
         let pos = if self.quit_pending {
             "Quit? (y)".to_string()
         } else if self.load_error.is_some() {
@@ -925,7 +939,7 @@ impl App {
         };
         let pos_style = if self.quit_pending || self.load_error.is_some() {
             Style::default()
-                .bg(if typing { ACCENT } else { SURFACE })
+                .bg(SURFACE)
                 .fg(ERROR)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -936,19 +950,129 @@ impl App {
             .padding(Padding::horizontal(1))
             .inner(area);
         let mode = self.mode_label();
-        let mode_width = mode.chars().count() as u16;
+        let badge = format!(" {} ", center_pad(mode, 6));
+        let mode_style = self.mode_badge_style();
+        let mode_width = badge.chars().count() as u16;
         let chunks = Layout::horizontal([
             Constraint::Length(mode_width),
             Constraint::Min(1),
         ])
         .split(inner);
-        frame.render_widget(Paragraph::new(mode).style(bar_style), chunks[0]);
+        frame.render_widget(Paragraph::new(badge).style(mode_style), chunks[0]);
         frame.render_widget(
             Paragraph::new(pos)
                 .style(pos_style)
                 .alignment(Alignment::Right),
             chunks[1],
         );
+    }
+
+    fn draw_help(&self, frame: &mut Frame<'_>, area: Rect) {
+        let width = area.width.saturating_sub(4).min(58).max(24);
+        let lines = self.help_lines();
+        let height = (lines.len() as u16)
+            .saturating_add(2)
+            .min(area.height.saturating_sub(2))
+            .max(5);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, rect);
+        let block = Block::bordered()
+            .title(" Keys ")
+            .title_bottom(" Esc / ? close ")
+            .style(Style::default().bg(SURFACE).fg(FOREGROUND))
+            .border_style(Style::default().fg(BORDER));
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(SURFACE).fg(FOREGROUND)),
+            inner,
+        );
+    }
+
+    fn help_lines(&self) -> Vec<Line<'static>> {
+        let keys = self.config.keymap();
+        let key = |name: &str| pretty_binding(keys.get(name).map(String::as_str).unwrap_or(""));
+        let row = |left: String, right: &str| {
+            Line::from(vec![
+                Span::styled(format!("  {left:<16}"), Style::default().fg(PRIMARY)),
+                Span::styled(right.to_string(), Style::default().fg(FOREGROUND)),
+            ])
+        };
+        let heading = |text: &str| {
+            Line::from(Span::styled(
+                format!(" {text}"),
+                Style::default()
+                    .fg(SECONDARY)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        };
+        vec![
+            heading("Motion"),
+            row(
+                format!("{} {}  {} {}", key("move_down"), key("move_up"), key("paragraph_next"), key("paragraph_prev")),
+                "line / paragraph",
+            ),
+            row(
+                format!("{} {}", key("move_left"), key("move_right")),
+                "previous / next norm",
+            ),
+            row(
+                format!("{} {}  {} {}", key("goto_top"), key("goto_bottom"), key("page_down"), key("page_up")),
+                "top / bottom / page",
+            ),
+            heading("Jump"),
+            row(key("enter_search"), "search"),
+            row("0-9".into(), "type a citation"),
+            row(key("enter_para"), "exact shortcut (MENU)"),
+            row(
+                format!("{} {}", key("next_hit"), key("prev_hit")),
+                "next / previous hit",
+            ),
+            heading("Tabs"),
+            row(
+                format!("{} {}/{}", key("tab_prefix"), key("tab_next"), key("tab_prev")),
+                "next / previous tab",
+            ),
+            row(format!("{} {} 0", key("tab_prefix"), key("tab_menu")), "MENU"),
+            row(
+                format!("{} 1-9 {}", key("tab_prefix"), key("tab_close")),
+                "jump / close tab",
+            ),
+            heading("App"),
+            row(key("quit"), "quit"),
+            row("Ctrl-c".into(), "quit now"),
+            row(key("help"), "this window"),
+        ]
+    }
+
+    fn mode_badge_style(&self) -> Style {
+        if self.help || self.prefix {
+            return Style::default()
+                .fg(FOREGROUND)
+                .bg(BORDER)
+                .add_modifier(Modifier::BOLD);
+        }
+        match self.screen_mode() {
+            Mode::Normal => Style::default()
+                .fg(PRIMARY)
+                .bg(SURFACE)
+                .add_modifier(Modifier::BOLD),
+            Mode::Para | Mode::Insert => Style::default()
+                .fg(SEARCH_FG)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD),
+            Mode::Search => Style::default()
+                .fg(SEARCH_FG)
+                .bg(SECONDARY)
+                .add_modifier(Modifier::BOLD),
+        }
     }
 
     fn screen_mode(&self) -> Mode {
@@ -966,6 +1090,9 @@ impl App {
     }
 
     pub fn mode_label(&self) -> &'static str {
+        if self.help {
+            return "HELP";
+        }
         if self.prefix {
             return "PREFIX";
         }
@@ -1045,6 +1172,10 @@ impl App {
         self.current_tab().map(|tab| tab.hit_highlight).unwrap_or(0)
     }
 
+    pub fn search_origin(&self) -> usize {
+        self.current_tab().map(|tab| tab.search_origin).unwrap_or(0)
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }
@@ -1055,6 +1186,10 @@ impl App {
 
     pub fn quit_prompt(&self) -> bool {
         self.quit_pending
+    }
+
+    pub fn help_open(&self) -> bool {
+        self.help
     }
 
     pub fn mounted_len(&self) -> usize {
@@ -1084,6 +1219,41 @@ fn printable(key: Key) -> Option<char> {
 
 fn is_yes(key: Key) -> bool {
     matches!(key, Key::Char('y' | 'Y'))
+}
+
+fn center_pad(text: &str, width: usize) -> String {
+    let len = text.chars().count();
+    if len >= width {
+        return text.to_string();
+    }
+    let extra = width - len;
+    let left = extra / 2;
+    let right = extra - left;
+    format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
+}
+
+fn pretty_binding(binding: &str) -> String {
+    let part = binding
+        .split(',')
+        .map(str::trim)
+        .find(|part| !part.is_empty())
+        .unwrap_or("");
+    let mut out = String::new();
+    for (index, token) in part.split('+').enumerate() {
+        if index > 0 {
+            out.push('-');
+        }
+        let pretty = match token {
+            "ctrl" => "Ctrl",
+            "shift" => "Shift",
+            "escape" => "Esc",
+            "enter" => "Enter",
+            "slash" => "/",
+            other => other,
+        };
+        out.push_str(pretty);
+    }
+    out
 }
 
 fn key_matches(key: Key, binding: &str) -> bool {
@@ -1175,6 +1345,23 @@ fn install_panic_hook() {
         restore_terminal();
         original(info);
     }));
+}
+
+fn menu_row(law: &LawRef, query: &str, searching: bool) -> Line<'static> {
+    let shortcut = format!("{:<10}", law.shortcut);
+    if searching {
+        let mut spans = styled_to_line(&highlight_text(&shortcut, query)).spans;
+        for span in &mut spans {
+            span.style = span.style.add_modifier(Modifier::BOLD);
+        }
+        spans.extend(styled_to_line(&highlight_text(law.title, query)).spans);
+        Line::from(spans)
+    } else {
+        Line::from(vec![
+            Span::styled(shortcut, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(law.title.to_string()),
+        ])
+    }
 }
 
 fn styled_to_line(text: &crate::search::StyledText) -> Line<'static> {
@@ -1280,7 +1467,7 @@ fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, index: usize, total: usize)
     );
 }
 
-fn search_card_height(
+pub(crate) fn search_card_height(
     hit: &crate::models::SearchHit,
     query: &str,
     abbreviation: &str,
@@ -1289,48 +1476,6 @@ fn search_card_height(
     search_card_lines(hit, query, abbreviation, width, SURFACE)
         .len()
         .max(1) as u16
-}
-
-fn search_view_start(
-    hits: &[crate::models::SearchHit],
-    highlight: usize,
-    query: &str,
-    abbreviation: &str,
-    width: u16,
-    view_height: u16,
-) -> usize {
-    if hits.is_empty() || view_height == 0 {
-        return 0;
-    }
-    let highlight = highlight.min(hits.len() - 1);
-    let height_of = |index: usize| search_card_height(&hits[index], query, abbreviation, width);
-    let mut y = 0u16;
-    for index in 0..=highlight {
-        let height = height_of(index);
-        if index == highlight {
-            if y.saturating_add(height) <= view_height {
-                return 0;
-            }
-            break;
-        }
-        y = y.saturating_add(height).saturating_add(1);
-    }
-    let highlight_height = height_of(highlight);
-    if highlight_height >= view_height {
-        return highlight;
-    }
-    let mut used = highlight_height;
-    let mut start = highlight;
-    while start > 0 {
-        let prev = start - 1;
-        let span = height_of(prev).saturating_add(1);
-        if used.saturating_add(span) > view_height {
-            break;
-        }
-        used = used.saturating_add(span);
-        start = prev;
-    }
-    start
 }
 
 fn search_card_lines(
@@ -1811,16 +1956,13 @@ mod tests {
         press(&mut app, &[Key::Char('j'), Key::Char('j'), Key::Char('k')]);
         assert_eq!(app.mode_label(), "NORMAL");
         assert_eq!(app.cmd(), "");
-        assert_eq!(app.current_index(), 1);
-        assert_ne!(app.current_citation(), first.as_deref());
-        app.handle_key(Key::Char('k'));
         assert_eq!(app.current_citation(), first.as_deref());
         app.handle_key(Key::Char('l'));
         assert_ne!(app.current_citation(), first.as_deref());
     }
 
     #[test]
-    fn k_and_shift_k_walk_up_as_mirror_of_j_and_shift_j() {
+    fn jk_line_scroll_does_not_step_paragraphs() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = sample_app(dir.path(), Some("bgb"), None);
         app.handle_key(Key::Char('J'));
@@ -1828,10 +1970,10 @@ mod tests {
         assert_eq!(app.current_index(), 2);
         assert_eq!(app.view_start(), 0);
         app.handle_key(Key::Char('k'));
-        assert_eq!(app.current_index(), 1);
+        assert_eq!(app.current_index(), 2);
         assert_eq!(app.view_start(), 0);
         app.handle_key(Key::Char('K'));
-        assert_eq!(app.current_index(), 0);
+        assert_eq!(app.current_index(), 1);
         assert_eq!(app.view_start(), 0);
         app.handle_key(Key::Char('j'));
         assert_eq!(app.current_index(), 1);
@@ -2106,6 +2248,49 @@ mod tests {
     }
 
     #[test]
+    fn search_jk_walks_the_page_before_scrolling() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = many_hits_app(dir.path());
+        press(
+            &mut app,
+            &[
+                Key::Slash,
+                Key::Char('n'),
+                Key::Char('e'),
+                Key::Char('e'),
+                Key::Char('d'),
+                Key::Char('l'),
+                Key::Char('e'),
+                Key::Enter,
+            ],
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.handle_key(Key::Char('j'));
+        assert_eq!(app.hit_highlight(), 1);
+        assert_eq!(app.search_origin(), 0);
+        let mut scrolled = false;
+        for _ in 0..20 {
+            app.handle_key(Key::Char('j'));
+            if app.search_origin() > 0 {
+                scrolled = true;
+                break;
+            }
+        }
+        assert!(scrolled, "j should scroll once the highlight leaves the page");
+        let origin = app.search_origin();
+        let highlight = app.hit_highlight();
+        app.handle_key(Key::Char('k'));
+        assert_eq!(app.hit_highlight(), highlight - 1);
+        assert_eq!(
+            app.search_origin(),
+            origin,
+            "k should walk the mark up without jumping the page"
+        );
+    }
+
+    #[test]
     fn search_jk_moves_highlight() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), Some("bgb"));
@@ -2309,6 +2494,115 @@ mod tests {
         let title = line.find("Bürgerliches").expect("title");
         assert_eq!(title - bgb, 10);
         assert!(!line.contains(">>"));
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut found_bold = false;
+        for y in 2..15 {
+            for x in 0..20 {
+                if buffer[(x, y)].symbol() == "B"
+                    && buffer[(x.saturating_add(1), y)].symbol() == "G"
+                    && buffer[(x.saturating_add(2), y)].symbol() == "B"
+                {
+                    assert!(
+                        buffer[(x, y)].modifier.contains(Modifier::BOLD),
+                        "MENU shortcut should be bold"
+                    );
+                    found_bold = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_bold);
+    }
+
+    #[test]
+    fn status_mode_is_a_badge_not_a_full_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = sample_app(dir.path(), Some("bgb"), None);
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let status_y = 15;
+        let mode_x = (0..80)
+            .find(|&x| buffer[(x, status_y)].symbol() == "N")
+            .expect("NORMAL badge");
+        assert_eq!(buffer[(mode_x, status_y)].fg, PRIMARY);
+        assert_eq!(buffer[(mode_x, status_y)].bg, SURFACE);
+        assert_eq!(buffer[(40, status_y)].bg, SURFACE);
+        assert_ne!(buffer[(40, status_y)].bg, ACCENT);
+
+        app.handle_key(Key::Char('4'));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let para_x = (0..80)
+            .find(|&x| buffer[(x, status_y)].symbol() == "P")
+            .expect("PARA badge");
+        assert_eq!(buffer[(para_x, status_y)].bg, ACCENT);
+        assert_eq!(buffer[(para_x, status_y)].fg, SEARCH_FG);
+        assert_eq!(buffer[(40, status_y)].bg, SURFACE);
+        let para_width = (0..80)
+            .filter(|&x| buffer[(x, status_y)].bg == ACCENT)
+            .count();
+
+        app.handle_key(Key::Esc);
+        app.handle_key(Key::Slash);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let search_x = (0..80)
+            .find(|&x| buffer[(x, status_y)].symbol() == "S")
+            .expect("SEARCH badge");
+        assert_eq!(buffer[(search_x, status_y)].bg, SECONDARY);
+        assert_eq!(buffer[(search_x, status_y)].fg, SEARCH_FG);
+        assert_eq!(buffer[(40, status_y)].bg, SURFACE);
+        assert_ne!(buffer[(40, status_y)].bg, ACCENT);
+        let search_width = (0..80)
+            .filter(|&x| buffer[(x, status_y)].bg == SECONDARY)
+            .count();
+        assert_eq!(para_width, search_width);
+        assert_eq!(para_width, 8);
+    }
+
+    #[test]
+    fn question_mark_toggles_help_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        assert!(!app.help_open());
+        app.handle_key(Key::Char('?'));
+        assert!(app.help_open());
+        assert_eq!(app.mode_label(), "HELP");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let joined: String = (0..24)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Keys"), "{joined}");
+        assert!(joined.contains("quit") || joined.contains("Ctrl-q"), "{joined}");
+        app.handle_key(Key::Esc);
+        assert!(!app.help_open());
+        app.handle_key(Key::Char('?'));
+        assert!(app.help_open());
+        app.handle_key(Key::Char('?'));
+        assert!(!app.help_open());
+    }
+
+    #[test]
+    fn question_mark_in_search_types_instead_of_opening_help() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = sample_app(dir.path(), Some("bgb"), None);
+        app.handle_key(Key::Slash);
+        app.handle_key(Key::Char('?'));
+        assert!(!app.help_open());
+        assert!(app.cmd().contains('?'));
     }
 
     #[test]
@@ -2347,6 +2641,45 @@ mod tests {
             }
         }
         assert!(found_heading);
+    }
+
+    #[test]
+    fn search_results_highlight_the_matched_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = sample_app(dir.path(), Some("bgb"), None);
+        press(
+            &mut app,
+            &[
+                Key::Slash,
+                Key::Char('K'),
+                Key::Char('a'),
+                Key::Char('u'),
+                Key::Char('f'),
+            ],
+        );
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut found = false;
+        for y in 2..17 {
+            for x in 0..76 {
+                if buffer[(x, y)].symbol() == "K"
+                    && buffer[(x + 1, y)].symbol() == "a"
+                    && buffer[(x + 2, y)].symbol() == "u"
+                    && buffer[(x + 3, y)].symbol() == "f"
+                {
+                    found = true;
+                    assert_eq!(
+                        buffer[(x, y)].bg,
+                        ACCENT,
+                        "matched search text should use the yellow highlight"
+                    );
+                    assert_eq!(buffer[(x, y)].fg, SEARCH_FG);
+                }
+            }
+        }
+        assert!(found, "expected to find highlighted Kauf");
     }
 
     #[test]

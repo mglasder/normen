@@ -203,11 +203,15 @@ fn find_ignore_case(chars: &[char], query: &str) -> Option<usize> {
 }
 
 fn closest_word_start(chars: &[char], query: &str) -> Option<usize> {
-    let needle: String = query.chars().map(lower_char).collect();
+    closest_word_range(chars, query).map(|(start, _)| start)
+}
+
+fn closest_word_range(chars: &[char], query: &str) -> Option<(usize, usize)> {
+    let needle: String = query.trim().chars().map(lower_char).collect();
     if needle.is_empty() {
         return None;
     }
-    let mut best: Option<(i64, usize)> = None;
+    let mut best: Option<(i64, usize, usize)> = None;
     let mut index = 0;
     while index < chars.len() {
         if !chars[index].is_alphanumeric() {
@@ -220,11 +224,11 @@ fn closest_word_start(chars: &[char], query: &str) -> Option<usize> {
         }
         let word: String = chars[start..index].iter().copied().map(lower_char).collect();
         let score = word_match_score(&needle, &word);
-        if score >= MIN_FUZZY_SCORE && best.is_none_or(|(best_score, _)| score > best_score) {
-            best = Some((score, start));
+        if score >= MIN_FUZZY_SCORE && best.is_none_or(|(best_score, _, _)| score > best_score) {
+            best = Some((score, start, index));
         }
     }
-    best.map(|(_, start)| start)
+    best.map(|(_, start, end)| (start, end))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,7 +280,7 @@ impl StyledText {
 pub fn format_search_hit(hit: &SearchHit, query: &str, abbreviation: &str) -> StyledText {
     let mut prompt = StyledText::new();
     let citation = format_citation(&hit.norm.citation, abbreviation);
-    prompt.append(&citation, Some("bold"));
+    append_marked(&mut prompt, &citation, query, Some("bold"));
     if !hit.norm.title.is_empty() {
         prompt.append("  ", None);
         prompt.append_styled(highlight_text(&hit.norm.title, query));
@@ -289,23 +293,88 @@ pub fn format_search_hit(hit: &SearchHit, query: &str, abbreviation: &str) -> St
     prompt
 }
 
+fn append_marked(prompt: &mut StyledText, text: &str, query: &str, fallback: Option<&str>) {
+    let marked = highlight_text(text, query);
+    let mut pos = 0;
+    for span in &marked.spans {
+        if span.start > pos {
+            prompt.append(&marked.plain[pos..span.start], fallback);
+        }
+        prompt.append(&marked.plain[span.start..span.end], Some(&span.style));
+        pos = span.end;
+    }
+    if pos < marked.plain.len() {
+        prompt.append(&marked.plain[pos..], fallback);
+    }
+}
+
 pub fn highlight_text(text: &str, query: &str) -> StyledText {
     let mut result = StyledText::new();
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
+    let needle: Vec<char> = query.trim().chars().map(lower_char).collect();
+    let chars: Vec<char> = text.chars().collect();
+    if needle.is_empty() || chars.is_empty() {
         result.append(text, None);
         return result;
     }
-    let lower = text.to_lowercase();
-    let mut start = 0;
-    while let Some(rel) = lower[start..].find(&needle) {
-        let index = start + rel;
-        result.append(&text[start..index], None);
-        result.append(&text[index..index + needle.len()], Some(HIGHLIGHT_STYLE));
-        start = index + needle.len();
+    let mut ranges = exact_highlight_ranges(&chars, &needle);
+    if ranges.is_empty() {
+        if let Some(range) = closest_word_range(&chars, query) {
+            ranges.push(range);
+        }
     }
-    result.append(&text[start..], None);
+    let mut pos = 0;
+    for (start, end) in ranges {
+        if start > pos {
+            result.append(&chars_to_string(&chars[pos..start]), None);
+        }
+        result.append(&chars_to_string(&chars[start..end]), Some(HIGHLIGHT_STYLE));
+        pos = end;
+    }
+    if pos < chars.len() {
+        result.append(&chars_to_string(&chars[pos..]), None);
+    }
     result
+}
+
+fn chars_to_string(chars: &[char]) -> String {
+    chars.iter().collect()
+}
+
+fn exact_highlight_ranges(chars: &[char], needle: &[char]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    if needle.is_empty() || chars.len() < needle.len() {
+        return ranges;
+    }
+    let mut index = 0;
+    while index + needle.len() <= chars.len() {
+        let matched = chars[index..index + needle.len()]
+            .iter()
+            .copied()
+            .map(lower_char)
+            .eq(needle.iter().copied());
+        if matched {
+            let (start, end) = word_bounds(chars, index);
+            if ranges.last().is_none_or(|(_, prev_end)| start >= *prev_end) {
+                ranges.push((start, end));
+            }
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    ranges
+}
+
+fn word_bounds(chars: &[char], index: usize) -> (usize, usize) {
+    let mut start = index;
+    while start > 0 && chars[start - 1].is_alphanumeric() {
+        start -= 1;
+    }
+    let mut end = index;
+    while end < chars.len() && chars[end].is_alphanumeric() {
+        end += 1;
+    }
+    (start, end)
 }
 
 #[cfg(test)]
@@ -558,5 +627,42 @@ mod tests {
             .spans
             .iter()
             .any(|span| span.style.to_lowercase().contains("on #")));
+    }
+
+    fn highlighted_piece(text: &StyledText) -> String {
+        text.spans
+            .iter()
+            .find(|span| span.style.contains("f5d595"))
+            .map(|span| text.plain[span.start..span.end].to_string())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn highlight_text_marks_query_after_umlauts() {
+        let rendered = highlight_text("Übertragung für regelmäßig gültige Änderung am Kaufvertrag", "Kaufvertrag");
+        assert_eq!(highlighted_piece(&rendered), "Kaufvertrag");
+    }
+
+    #[test]
+    fn highlight_text_marks_closest_word_when_query_is_not_exact() {
+        let rendered = highlight_text("Der Kaufvertrag verpflichtet den Verkäufer.", "kaufvertr");
+        assert_eq!(highlighted_piece(&rendered), "Kaufvertrag");
+        let fuzzy = highlight_text("Beginn der Rechtsfähigkeit", "Rechtsfahigkeit");
+        assert_eq!(highlighted_piece(&fuzzy), "Rechtsfähigkeit");
+    }
+
+    #[test]
+    fn format_search_hit_highlights_citation_and_preview() {
+        let law = bgb();
+        let hits = search_norms(&law, "433");
+        let prompt = format_search_hit(&hits[0], "433", "BGB");
+        assert!(
+            prompt
+                .spans
+                .iter()
+                .any(|span| span.style.contains("f5d595")
+                    && prompt.plain[span.start..span.end].contains("433")),
+            "citation number should be highlighted: {prompt:?}"
+        );
     }
 }

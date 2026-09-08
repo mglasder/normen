@@ -39,6 +39,7 @@ law tab returns to MENU. Opening a law again starts at the beginning
 | `n` `N` | Next / previous search hit |
 | `0`–`9` | Para mode (type a number) |
 | `/` | Search mode |
+| `?` | Key bindings |
 
 ### Tabs
 

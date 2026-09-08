@@ -24,6 +24,7 @@ move_down = j,down
 move_up = k,up
 move_right = l,right
 confirm = enter
+help = ?
 quit = ctrl+q
 
 [reader]
@@ -54,6 +55,7 @@ pub fn default_keys() -> HashMap<String, String> {
         ("move_up".into(), "k,up".into()),
         ("move_right".into(), "l,right".into()),
         ("confirm".into(), "enter".into()),
+        ("help".into(), "?".into()),
         ("enter_search".into(), "/".into()),
         ("paragraph_prev".into(), "K,shift+k".into()),
         ("paragraph_next".into(), "J,shift+j".into()),

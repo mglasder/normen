@@ -18,6 +18,7 @@ pub struct ReaderTab {
     pub hit_index: i32,
     pub view_start: usize,
     pub skip_lines: usize,
+    pub search_origin: usize,
 }
 
 impl ReaderTab {
@@ -35,6 +36,7 @@ impl ReaderTab {
             hit_index: -1,
             view_start: 0,
             skip_lines: 0,
+            search_origin: 0,
         };
         if tab.law.norms.is_empty() {
             tab.current = 0;
@@ -127,6 +129,7 @@ impl ReaderTab {
         if query.trim().is_empty() {
             self.hits.clear();
             self.hit_highlight = 0;
+            self.search_origin = 0;
             return;
         }
         self.hits = search_norms(&self.law, query);
@@ -149,6 +152,7 @@ impl ReaderTab {
                 self.hit_highlight = index;
             }
         }
+        self.search_origin = 0;
     }
 
     pub fn lock_search(&mut self) -> bool {
@@ -160,12 +164,85 @@ impl ReaderTab {
         true
     }
 
-    pub fn move_hit(&mut self, delta: isize) {
+    pub fn move_hit(&mut self, delta: isize, width: u16, view_height: u16) {
         if self.hits.is_empty() {
             return;
         }
         let next = self.hit_highlight as isize + delta;
         self.hit_highlight = next.clamp(0, self.hits.len() as isize - 1) as usize;
+        self.scroll_hit_into_view(width, view_height);
+    }
+
+    pub fn ensure_hit_visible(&mut self, width: u16, view_height: u16) {
+        if self.hits.is_empty() {
+            self.search_origin = 0;
+            return;
+        }
+        self.hit_highlight = self.hit_highlight.min(self.hits.len() - 1);
+        self.scroll_hit_into_view(width, view_height);
+    }
+
+    fn hit_span(&self, index: usize, width: u16) -> usize {
+        let query = self.cmd.trim_start_matches('/');
+        self.hits
+            .get(index)
+            .map(|hit| {
+                (super::search_card_height(hit, query, &self.law.abbreviation, width) as usize)
+                    .saturating_add(1)
+            })
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    fn hit_y_in_view(&self, index: usize, width: u16) -> Option<(isize, usize)> {
+        if index < self.search_origin {
+            return None;
+        }
+        let mut y = 0isize;
+        for i in self.search_origin..=index {
+            let height = self.hit_span(i, width);
+            if i == index {
+                return Some((y, height));
+            }
+            y += height as isize;
+        }
+        None
+    }
+
+    fn pin_hit_top(&mut self) {
+        self.search_origin = self.hit_highlight;
+    }
+
+    fn pin_hit_bottom(&mut self, width: u16, view_height: usize) {
+        let height = self.hit_span(self.hit_highlight, width);
+        if height >= view_height {
+            self.pin_hit_top();
+            return;
+        }
+        let mut used = height;
+        let mut start = self.hit_highlight;
+        while start > 0 {
+            let prev = start - 1;
+            let prev_height = self.hit_span(prev, width);
+            if used + prev_height <= view_height {
+                used += prev_height;
+                start = prev;
+                continue;
+            }
+            break;
+        }
+        self.search_origin = start;
+    }
+
+    fn scroll_hit_into_view(&mut self, width: u16, view_height: u16) {
+        let view_height = view_height.max(1) as usize;
+        match self.hit_y_in_view(self.hit_highlight, width) {
+            Some((y, height)) if y >= 0 && y + height as isize <= view_height as isize => {}
+            Some((y, _)) if y < 0 => self.pin_hit_top(),
+            Some(_) => self.pin_hit_bottom(width, view_height),
+            None if self.hit_highlight < self.search_origin => self.pin_hit_top(),
+            None => self.pin_hit_bottom(width, view_height),
+        }
     }
 
     pub fn open_highlighted_hit(&mut self) {
@@ -230,28 +307,6 @@ impl ReaderTab {
         self.scroll_current_into_view(width, view_height);
     }
 
-    pub fn move_down(&mut self, width: u16, view_height: u16) {
-        if self.at_bottom_edge(width, view_height) {
-            self.scroll_down(width);
-            if !self.current_overlaps_view(width, view_height) {
-                self.current = self.view_start;
-            }
-        } else {
-            self.step_norm(1, width, view_height);
-        }
-    }
-
-    pub fn move_up(&mut self, width: u16, view_height: u16) {
-        if self.at_top_edge(width, view_height) {
-            self.scroll_up(width);
-            if !self.current_overlaps_view(width, view_height) {
-                self.current = self.last_visible_index(width, view_height);
-            }
-        } else {
-            self.step_norm(-1, width, view_height);
-        }
-    }
-
     pub fn scroll_by(&mut self, delta: isize, width: u16, view_height: u16) {
         if delta > 0 {
             for _ in 0..delta {
@@ -307,21 +362,6 @@ impl ReaderTab {
         }
         self.view_start = start;
         self.skip_lines = skip;
-    }
-
-    fn at_top_edge(&self, width: u16, _view_height: u16) -> bool {
-        match self.card_y_in_view(self.current, width) {
-            Some((y, _)) => y <= 0,
-            None => true,
-        }
-    }
-
-    fn at_bottom_edge(&self, width: u16, view_height: u16) -> bool {
-        let view_height = view_height.max(1) as isize;
-        match self.card_y_in_view(self.current, width) {
-            Some((y, height)) => y + height as isize >= view_height,
-            None => true,
-        }
     }
 
     fn current_overlaps_view(&self, width: u16, view_height: u16) -> bool {
