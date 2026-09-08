@@ -264,6 +264,50 @@ async def _slash_31a(cache_dir: Path) -> None:
         assert screen.current.citation == "§ 31a"
 
 
+def test_slash_search_does_not_keep_unsuffixed_neighbor(tmp_path: Path) -> None:
+    asyncio.run(_slash_113a_over_113(tmp_path))
+
+
+def _neighbor_library(cache_dir: Path) -> LawLibrary:
+    xml = (
+        '<?xml version="1.0"?>'
+        "<dokumente><norm><metadaten><jurabk>StGB</jurabk>"
+        "<langue>Strafgesetzbuch</langue></metadaten><textdaten/></norm>"
+        "<norm><metadaten><jurabk>StGB</jurabk><enbez>§ 113</enbez>"
+        "<titel>Widerstand</titel></metadaten>"
+        '<textdaten><text format="XML"><Content>'
+        "<P>Siehe auch § 113a.</P></Content></text></textdaten></norm>"
+        "<norm><metadaten><jurabk>StGB</jurabk><enbez>§ 113a</enbez>"
+        "<titel>Tätlicher Angriff</titel></metadaten>"
+        '<textdaten><text format="XML"><Content>'
+        "<P>Tätlicher Angriff.</P></Content></text></textdaten></norm>"
+        "</dokumente>"
+    ).encode()
+    return LawLibrary(cache_dir=cache_dir, downloader=lambda slug: xml)
+
+
+async def _slash_113a_over_113(cache_dir: Path) -> None:
+    app = _app(cache_dir, initial_law="stgb", library=_neighbor_library(cache_dir))
+    async with app.run_test() as pilot:
+        await _wait_for_law(app, pilot, resolve_law("stgb"))
+        await pilot.press("slash", "1", "1", "3", "a")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ReaderScreen)
+        citations = [hit.norm.citation for hit in screen.hits]
+        assert citations[0] == "§ 113a"
+        assert "§ 113" in citations
+        results = screen.query_one("#results", OptionList)
+        highlighted = results.highlighted
+        assert highlighted is not None
+        assert citations[highlighted] == "§ 113a"
+        await pilot.press("enter")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen.current is not None
+        assert screen.current.citation == "§ 113a"
+
+
 def test_reader_mounts_only_a_window_of_norms(tmp_path: Path) -> None:
     asyncio.run(_windowed_reader(tmp_path))
 

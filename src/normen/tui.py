@@ -14,7 +14,13 @@ from normen.config import Config
 from normen.document import iter_body_blocks, law_pos_label, norm_heading
 from normen.fetch import LawLibrary
 from normen.models import Law, Norm, SearchHit
-from normen.search import format_search_hit, highlight_text, lookup_norm, search_norms
+from normen.search import (
+    format_search_hit,
+    highlight_text,
+    lookup_norm,
+    parse_citation_query,
+    search_norms,
+)
 from normen.session import SessionStore
 from normen.theme import PASTEL_DARK
 
@@ -686,6 +692,7 @@ class ReaderScreen(Screen):
             self.hits = []
             return
         self.hits = search_norms(self.law, query)
+        exact = lookup_norm(self.law, query) if parse_citation_query(query) else None
         options: list[Option | None] = []
         highlight = 0
         for index, hit in enumerate(self.hits):
@@ -694,7 +701,10 @@ class ReaderScreen(Screen):
             prompt = format_search_hit(hit, query, self.law.abbreviation)
             law_index = self.law.norms.index(hit.norm)
             options.append(Option(prompt, id=f"norm-{law_index}"))
-            if keep and hit.norm.citation == keep:
+            if exact is not None:
+                if hit.norm.citation == exact.citation:
+                    highlight = index
+            elif keep and hit.norm.citation == keep:
                 highlight = index
         if options:
             results.add_options(options)
