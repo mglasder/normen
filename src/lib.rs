@@ -1,4 +1,8 @@
 pub mod catalog;
+pub mod config;
+pub mod document;
 pub mod fetch;
 pub mod models;
 pub mod parser;
+pub mod search;
+pub mod session;
