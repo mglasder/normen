@@ -10,23 +10,12 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 
 ## Usage
 
-Rust (current):
-
 ```bash
 cargo run
 cargo test
 ```
 
 Or jump straight in: `cargo run -- bgb`, `cargo run -- BGB 433`, `cargo run -- gg /würde`.
-
-Python (previous implementation):
-
-```bash
-uv sync
-uv run normen
-```
-
-Or jump straight in: `uv run normen bgb`, `uv run normen BGB 433`, `uv run normen gg /würde`.
 
 Opening a law shows the full text and **always creates a new tab**. The same
 law can be open twice; each tab has its own position. The command line sits
@@ -91,5 +80,4 @@ Keybindings and other settings live in `~/.config/normen/normen.conf`
 
 ```bash
 cargo test
-uv run pytest
 ```
