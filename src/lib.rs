@@ -6,3 +6,4 @@ pub mod models;
 pub mod parser;
 pub mod search;
 pub mod session;
+pub mod ui;
