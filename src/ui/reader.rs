@@ -457,19 +457,6 @@ impl ReaderTab {
         }
     }
 
-    pub fn step_hit(&mut self, delta: isize) {
-        if self.hits.is_empty() {
-            return;
-        }
-        let len = self.hits.len() as isize;
-        let current = self.hit_index.max(0) as isize;
-        self.hit_index = (current + delta).rem_euclid(len) as i32;
-        if let Some(hit) = self.hits.get(self.hit_index as usize) {
-            let citation = hit.norm.citation.clone();
-            self.select_citation(&citation);
-        }
-    }
-
     pub fn type_digit(&mut self, digit: char) {
         if self.mode == Mode::Para {
             self.para.push(digit);

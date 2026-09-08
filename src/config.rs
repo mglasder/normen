@@ -33,8 +33,6 @@ paragraph_prev = K,shift+k
 paragraph_next = J,shift+j
 goto_top = g
 goto_bottom = G
-next_hit = n
-prev_hit = shift+n
 page_down = ctrl+d
 page_up = ctrl+u
 
@@ -61,8 +59,6 @@ pub fn default_keys() -> HashMap<String, String> {
         ("paragraph_next".into(), "J,shift+j".into()),
         ("goto_top".into(), "g".into()),
         ("goto_bottom".into(), "G".into()),
-        ("next_hit".into(), "n".into()),
-        ("prev_hit".into(), "shift+n".into()),
         ("page_down".into(), "ctrl+d".into()),
         ("page_up".into(), "ctrl+u".into()),
         ("tab_prefix".into(), "ctrl+n".into()),

@@ -380,8 +380,6 @@ impl App {
         let move_up = self.matches(key, "move_up") || key == Key::Char('k') || key == Key::Up;
         let goto_top = self.matches(key, "goto_top") || key == Key::Char('g');
         let goto_bottom = self.matches(key, "goto_bottom") || key == Key::Char('G');
-        let next_hit = self.matches(key, "next_hit");
-        let prev_hit = self.matches(key, "prev_hit");
         let page_down = self.matches(key, "page_down") || matches!(key, Key::Ctrl('d'));
         let page_up = self.matches(key, "page_up") || matches!(key, Key::Ctrl('u'));
         let card_width = self.reader_card_width();
@@ -507,14 +505,6 @@ impl App {
                 }
                 if goto_bottom {
                     tab.goto_bottom();
-                    return;
-                }
-                if next_hit {
-                    tab.step_hit(1);
-                    return;
-                }
-                if prev_hit {
-                    tab.step_hit(-1);
                 }
             }
         }
@@ -968,11 +958,11 @@ impl App {
     }
 
     fn draw_help(&self, frame: &mut Frame<'_>, area: Rect) {
-        let width = area.width.saturating_sub(4).min(58).max(24);
+        let width = area.width.saturating_sub(4).min(64).max(24);
         let lines = self.help_lines();
         let height = (lines.len() as u16)
             .saturating_add(2)
-            .min(area.height.saturating_sub(2))
+            .min(area.height)
             .max(5);
         let x = area.x + (area.width.saturating_sub(width)) / 2;
         let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -1001,7 +991,7 @@ impl App {
         let key = |name: &str| pretty_binding(keys.get(name).map(String::as_str).unwrap_or(""));
         let row = |left: String, right: &str| {
             Line::from(vec![
-                Span::styled(format!("  {left:<16}"), Style::default().fg(PRIMARY)),
+                Span::styled(format!("  {left:<18}"), Style::default().fg(PRIMARY)),
                 Span::styled(right.to_string(), Style::default().fg(FOREGROUND)),
             ])
         };
@@ -1016,37 +1006,47 @@ impl App {
         vec![
             heading("Motion"),
             row(
-                format!("{} {}  {} {}", key("move_down"), key("move_up"), key("paragraph_next"), key("paragraph_prev")),
-                "line / paragraph",
+                format!("{} {}", key("move_down"), key("move_up")),
+                "scroll line",
+            ),
+            row(
+                format!("{} {}", key("paragraph_next"), key("paragraph_prev")),
+                "next / previous paragraph",
             ),
             row(
                 format!("{} {}", key("move_left"), key("move_right")),
                 "previous / next norm",
             ),
             row(
-                format!("{} {}  {} {}", key("goto_top"), key("goto_bottom"), key("page_down"), key("page_up")),
-                "top / bottom / page",
+                format!("{} {}", key("goto_top"), key("goto_bottom")),
+                "top / bottom",
+            ),
+            row(
+                format!("{} {}", key("page_down"), key("page_up")),
+                "page down / up",
             ),
             heading("Jump"),
-            row(key("enter_search"), "search"),
+            row(key("enter_search"), "search (Enter then j/k)"),
             row("0-9".into(), "type a citation"),
-            row(key("enter_para"), "exact shortcut (MENU)"),
-            row(
-                format!("{} {}", key("next_hit"), key("prev_hit")),
-                "next / previous hit",
-            ),
+            row(key("enter_para"), "PARA / MENU shortcut"),
+            row(key("confirm"), "confirm"),
+            row(key("enter_normal"), "cancel / NORMAL"),
             heading("Tabs"),
             row(
                 format!("{} {}/{}", key("tab_prefix"), key("tab_next"), key("tab_prev")),
                 "next / previous tab",
             ),
-            row(format!("{} {} 0", key("tab_prefix"), key("tab_menu")), "MENU"),
             row(
-                format!("{} 1-9 {}", key("tab_prefix"), key("tab_close")),
-                "jump / close tab",
+                format!("{} {}/0", key("tab_prefix"), key("tab_menu")),
+                "MENU",
+            ),
+            row(format!("{} 1-9", key("tab_prefix")), "jump to tab"),
+            row(
+                format!("{} {}", key("tab_prefix"), key("tab_close")),
+                "close tab",
             ),
             heading("App"),
-            row(key("quit"), "quit"),
+            row(key("quit"), "quit (then y)"),
             row("Ctrl-c".into(), "quit now"),
             row(key("help"), "this window"),
         ]
@@ -1233,18 +1233,30 @@ fn center_pad(text: &str, width: usize) -> String {
 }
 
 fn pretty_binding(binding: &str) -> String {
-    let part = binding
+    let parts: Vec<&str> = binding
         .split(',')
         .map(str::trim)
-        .find(|part| !part.is_empty())
-        .unwrap_or("");
+        .filter(|part| !part.is_empty())
+        .collect();
+    if let Some(letter) = parts.iter().copied().find(|part| part.chars().count() == 1) {
+        return letter.to_string();
+    }
+    pretty_key_part(parts.first().copied().unwrap_or(""))
+}
+
+fn pretty_key_part(part: &str) -> String {
+    let tokens: Vec<&str> = part.split('+').filter(|token| !token.is_empty()).collect();
+    if tokens.len() == 2 && tokens[0] == "shift" && tokens[1].chars().count() == 1 {
+        return tokens[1].to_uppercase();
+    }
     let mut out = String::new();
-    for (index, token) in part.split('+').enumerate() {
+    for (index, token) in tokens.into_iter().enumerate() {
         if index > 0 {
             out.push('-');
         }
         let pretty = match token {
             "ctrl" => "Ctrl",
+            "alt" => "Alt",
             "shift" => "Shift",
             "escape" => "Esc",
             "enter" => "Enter",
@@ -1726,6 +1738,50 @@ mod tests {
             None,
             false,
         )
+    }
+
+    fn assert_help_overlay(joined: &str) {
+        assert!(
+            joined.contains("scroll") && joined.contains("paragraph"),
+            "j/k and J/K must be labeled separately: {joined}"
+        );
+        assert!(
+            !joined.contains("hit"),
+            "n/N hit bindings should not appear: {joined}"
+        );
+        assert!(joined.contains("Esc"), "missing Esc: {joined}");
+        assert!(joined.contains("Enter"), "missing Enter: {joined}");
+        assert!(
+            joined.contains("PARA") || joined.contains("citation"),
+            "i / 0-9 should mention PARA or citation: {joined}"
+        );
+        assert!(joined.contains("close"), "missing tab close: {joined}");
+        for line in joined.lines() {
+            if line.contains("1-9") {
+                assert!(
+                    !line.contains("close"),
+                    "tab jump and close must be separate rows: {line}"
+                );
+            }
+        }
+        assert!(
+            joined.contains("quit") && (joined.contains("Ctrl-q") || joined.contains("Ctrl-Q")),
+            "missing quit: {joined}"
+        );
+        assert!(
+            joined.contains("this window"),
+            "help key was clipped: {joined}"
+        );
+    }
+
+    #[test]
+    fn pretty_binding_shows_letters_not_shift_chords() {
+        assert_eq!(pretty_binding("shift+n"), "N");
+        assert_eq!(pretty_binding("K,shift+k"), "K");
+        assert_eq!(pretty_binding("j,down"), "j");
+        assert_eq!(pretty_binding("ctrl+d"), "Ctrl-d");
+        assert_eq!(pretty_binding("escape"), "Esc");
+        assert_eq!(pretty_binding("enter"), "Enter");
     }
 
     fn many_hits_app(dir: &Path) -> App {
@@ -2586,13 +2642,43 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("Keys"), "{joined}");
-        assert!(joined.contains("quit") || joined.contains("Ctrl-q"), "{joined}");
+        assert_help_overlay(&joined);
         app.handle_key(Key::Esc);
         assert!(!app.help_open());
         app.handle_key(Key::Char('?'));
         assert!(app.help_open());
         app.handle_key(Key::Char('?'));
         assert!(!app.help_open());
+    }
+
+    #[test]
+    fn help_overlay_shows_remapped_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("normen.conf"),
+            "[reader]\nparagraph_next = x\nparagraph_prev = y\n",
+        )
+        .unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.handle_key(Key::Char('?'));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let joined: String = (0..24)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.lines().any(|line| line.contains('x')
+                && line.contains('y')
+                && line.contains("paragraph")),
+            "remapped J/K should appear as x y: {joined}"
+        );
     }
 
     #[test]

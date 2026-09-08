@@ -36,7 +36,6 @@ law tab returns to MENU. Opening a law again starts at the beginning
 | `J` `K` | Next / previous paragraph |
 | `h` `l` | Previous / next norm |
 | `g` `G` | Top / bottom |
-| `n` `N` | Next / previous search hit |
 | `0`–`9` | Para mode (type a number) |
 | `/` | Search mode |
 | `?` | Key bindings |
@@ -44,8 +43,7 @@ law tab returns to MENU. Opening a law again starts at the beginning
 ### Tabs
 
 Press `Ctrl-n`, then the command key. The status bar shows `PREFIX` until
-you press the suffix. Plain `n` still jumps search hits and `0`–`9` still
-enter PARA mode.
+you press the suffix. `0`–`9` still enter PARA mode.
 
 | Key | Action |
 | --- | --- |
