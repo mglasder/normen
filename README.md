@@ -17,6 +17,18 @@ cargo test
 
 Or jump straight in: `cargo run -- bgb`, `cargo run -- BGB 433`, `cargo run -- gg /würde`.
 
+`normen` always starts a **new unsaved** workspace (MENU, or one tab if you pass a law). It does not resume the last session.
+
+```bash
+normen attach        # last saved workspace (error if none)
+normen attach 3      # workspace id 3
+normen list          # id and open tabs
+normen rm 3
+normen rm --all
+```
+
+Workspaces are stored in `~/.normen/sessions.json`. **Ctrl-q** then `y` saves the open tabs (law + citation + which tab is active). **Esc** cancels. A MENU-only quit does not create a row. **Ctrl-c** then `y` quits without saving and **deletes** that session if it had an id; **Esc** cancels.
+
 Opening a law shows the full text and **always creates a new tab**. The same
 law can be open twice; each tab has its own position. The command line sits
 above the text; a tmux-style tab bar at the top always starts with
@@ -52,7 +64,8 @@ you press the suffix. `0`–`9` still enter PARA mode.
 | `Ctrl-n` `0` / `m` | Jump to MENU |
 | `Ctrl-n` `1`–`9` | Jump to that law tab |
 | `Ctrl-n` `x` | Close current law tab (no confirm) |
-| `Ctrl-q` | Quit (confirm with `y`) |
+| `Ctrl-q` | Save workspace and quit (`y` confirm, `Esc` cancel) |
+| `Ctrl-c` | Kill session and quit (`y` confirm, `Esc` cancel; deletes the saved row if any) |
 
 ### Search mode (`/`)
 
