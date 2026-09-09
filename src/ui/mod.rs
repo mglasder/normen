@@ -3,6 +3,7 @@ pub mod reader;
 pub mod theme;
 
 use std::io::{self, stdout, IsTerminal};
+use std::path::PathBuf;
 
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -22,7 +23,7 @@ use crate::config::Config;
 use crate::document::{iter_body_blocks, norm_heading};
 use crate::models::Law;
 use crate::search::{format_search_hit, highlight_text};
-use crate::session::SessionStore;
+use crate::session::{WorkspaceStore, WorkspaceTab};
 
 use self::menu::{para_char, MenuState};
 use self::reader::ReaderTab;
@@ -32,6 +33,17 @@ use self::theme::{
 };
 
 pub const WINDOW_RADIUS: usize = 16;
+
+#[derive(Debug, Clone)]
+pub enum Start {
+    Fresh {
+        law: Option<String>,
+        norm: Option<String>,
+    },
+    Attach {
+        id: Option<u32>,
+    },
+}
 
 pub fn window_range(index: usize, total: usize, radius: usize) -> (usize, usize) {
     if total == 0 {
@@ -75,9 +87,11 @@ pub struct App {
     prefix: bool,
     help: bool,
     quit_pending: bool,
+    kill_pending: bool,
     pub should_quit: bool,
     refresh: bool,
-    session: SessionStore,
+    workspaces: WorkspaceStore,
+    session_id: Option<u32>,
     load_error: Option<String>,
     body_width: u16,
     body_height: u16,
@@ -91,6 +105,59 @@ impl App {
         initial_norm: Option<String>,
         refresh: bool,
     ) -> Self {
+        Self::try_start(
+            config,
+            load,
+            Start::Fresh {
+                law: initial_law,
+                norm: initial_norm,
+            },
+            refresh,
+        )
+        .expect("fresh start")
+    }
+
+    pub fn try_start(
+        config: Config,
+        load: Box<dyn Fn(&LawRef, bool) -> Result<Law, String>>,
+        start: Start,
+        refresh: bool,
+    ) -> Result<Self, String> {
+        let session_path = config
+            .path
+            .parent()
+            .unwrap_or(config.path.as_path())
+            .join("sessions.json");
+        Self::start_with_path(config, load, start, refresh, session_path)
+    }
+
+    pub fn start_with_path(
+        config: Config,
+        load: Box<dyn Fn(&LawRef, bool) -> Result<Law, String>>,
+        start: Start,
+        refresh: bool,
+        session_path: PathBuf,
+    ) -> Result<Self, String> {
+        match start {
+            Start::Fresh { law, norm } => {
+                Ok(Self::fresh(config, load, law, norm, refresh, session_path))
+            }
+            Start::Attach { id } => {
+                let mut app = Self::fresh(config, load, None, None, refresh, session_path);
+                app.attach(id)?;
+                Ok(app)
+            }
+        }
+    }
+
+    fn fresh(
+        config: Config,
+        load: Box<dyn Fn(&LawRef, bool) -> Result<Law, String>>,
+        initial_law: Option<String>,
+        initial_norm: Option<String>,
+        refresh: bool,
+        session_path: PathBuf,
+    ) -> Self {
         let mut app = Self {
             config,
             load,
@@ -101,9 +168,11 @@ impl App {
             prefix: false,
             help: false,
             quit_pending: false,
+            kill_pending: false,
             should_quit: false,
             refresh,
-            session: SessionStore::new(),
+            workspaces: WorkspaceStore::open(session_path),
+            session_id: None,
             load_error: None,
             body_width: 80,
             body_height: 16,
@@ -114,6 +183,40 @@ impl App {
             }
         }
         app
+    }
+
+    fn attach(&mut self, id: Option<u32>) -> Result<(), String> {
+        let id = id
+            .or_else(|| self.workspaces.mru_id())
+            .ok_or_else(|| "no persisted session".to_string())?;
+        let workspace = self
+            .workspaces
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("no persisted session {id}"))?;
+        let mut failed = false;
+        for tab in &workspace.tabs {
+            let Some(law_ref) = resolve_law(&tab.slug) else {
+                self.load_error = Some(format!("unknown law {}", tab.slug));
+                failed = true;
+                continue;
+            };
+            self.open_tab(*law_ref, Some(tab.citation.as_str()));
+            if self.load_error.is_some() {
+                failed = true;
+            }
+        }
+        if failed {
+            return Ok(());
+        }
+        self.session_id = Some(id);
+        self.workspaces.touch(id);
+        if workspace.active < 0 {
+            self.show_menu();
+        } else {
+            self.switch_tab(workspace.active as usize);
+        }
+        Ok(())
     }
 
     pub fn run(&mut self) -> io::Result<()> {
@@ -153,13 +256,22 @@ impl App {
 
     pub fn handle_key(&mut self, key: Key) {
         if matches!(key, Key::Ctrl('c')) {
-            self.should_quit = true;
+            self.quit_pending = false;
+            self.kill_pending = true;
+            return;
+        }
+        if self.kill_pending {
+            if is_yes(key) {
+                self.kill_quit();
+            } else if self.matches(key, "enter_normal") || key == Key::Esc {
+                self.kill_pending = false;
+            }
             return;
         }
         if self.quit_pending {
             if is_yes(key) {
-                self.should_quit = true;
-            } else {
+                self.persist_quit();
+            } else if self.matches(key, "enter_normal") || key == Key::Esc {
                 self.quit_pending = false;
             }
             return;
@@ -230,7 +342,7 @@ impl App {
     }
 
     fn pending_load_label(&self, key: Key) -> Option<&'static str> {
-        if self.quit_pending || self.prefix || !self.on_menu() {
+        if self.quit_pending || self.kill_pending || self.prefix || !self.on_menu() {
             return None;
         }
         let confirm = key == Key::Enter || self.matches(key, "confirm");
@@ -526,9 +638,6 @@ impl App {
                 self.load_error = None;
                 let mut tab = ReaderTab::from_law(law_ref, law);
                 tab.apply_initial(initial);
-                if let Some(citation) = tab.current_citation() {
-                    self.session.set(law_ref.slug, citation);
-                }
                 self.last = self.active;
                 self.tabs.push(tab);
                 self.active = (self.tabs.len() - 1) as i32;
@@ -672,6 +781,9 @@ impl App {
         if self.help {
             self.draw_help(frame, area);
         }
+        if self.quit_pending || self.kill_pending {
+            self.draw_confirm(frame, area);
+        }
     }
 
     fn draw_cmd(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -688,7 +800,7 @@ impl App {
     }
 
     fn show_cmd_cursor(&self) -> bool {
-        if self.prefix || self.quit_pending || self.help {
+        if self.prefix || self.quit_pending || self.kill_pending || self.help {
             return false;
         }
         match self.screen_mode() {
@@ -918,8 +1030,8 @@ impl App {
 
     fn draw_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let bar_style = Style::default().bg(SURFACE).fg(FOREGROUND);
-        let pos = if self.quit_pending {
-            "Quit? (y)".to_string()
+        let pos = if self.kill_pending || self.quit_pending {
+            String::new()
         } else if self.load_error.is_some() {
             self.pos_label()
         } else if self.on_menu() {
@@ -927,7 +1039,7 @@ impl App {
         } else {
             self.pos_label()
         };
-        let pos_style = if self.quit_pending || self.load_error.is_some() {
+        let pos_style = if self.quit_pending || self.kill_pending || self.load_error.is_some() {
             Style::default()
                 .bg(SURFACE)
                 .fg(ERROR)
@@ -976,14 +1088,92 @@ impl App {
         let block = Block::bordered()
             .title(" Keys ")
             .title_bottom(" Esc / ? close ")
+            .title_style(Style::default().fg(ACCENT))
             .style(Style::default().bg(SURFACE).fg(FOREGROUND))
-            .border_style(Style::default().fg(BORDER));
+            .border_style(Style::default().fg(ACCENT));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(SURFACE).fg(FOREGROUND)),
             inner,
         );
+    }
+
+    fn draw_confirm(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (title, body) = self.confirm_copy();
+        let width = area.width.saturating_sub(8).min(52).max(28);
+        let height = (body.len() as u16)
+            .saturating_add(2)
+            .min(area.height)
+            .max(5);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, rect);
+        let block = Block::bordered()
+            .title(title)
+            .title_bottom(" y confirm   Esc cancel ")
+            .title_style(Style::default().fg(ERROR))
+            .style(Style::default().bg(SURFACE).fg(FOREGROUND))
+            .border_style(Style::default().fg(ERROR));
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        let lines: Vec<Line<'static>> = body
+            .into_iter()
+            .map(|text| {
+                Line::from(Span::styled(
+                    format!(" {text}"),
+                    Style::default().fg(FOREGROUND),
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(SURFACE).fg(FOREGROUND)),
+            inner,
+        );
+    }
+
+    fn confirm_copy(&self) -> (&'static str, Vec<&'static str>) {
+        if self.kill_pending {
+            if self.session_id.is_some() {
+                (
+                    " Kill ",
+                    vec![
+                        "Quit without saving.",
+                        "This session will be deleted.",
+                    ],
+                )
+            } else {
+                (
+                    " Kill ",
+                    vec![
+                        "Quit without saving.",
+                        "This layout was never saved.",
+                    ],
+                )
+            }
+        } else if self.tabs.is_empty() {
+            (
+                " Quit ",
+                vec![
+                    "Quit without saving.",
+                    "There are no law tabs to keep.",
+                ],
+            )
+        } else {
+            (
+                " Save ",
+                vec![
+                    "Save this workspace and quit.",
+                    "Resume later with: normen attach",
+                ],
+            )
+        }
     }
 
     fn help_lines(&self) -> Vec<Line<'static>> {
@@ -1046,13 +1236,19 @@ impl App {
                 "close tab",
             ),
             heading("App"),
-            row(key("quit"), "quit (then y)"),
-            row("Ctrl-c".into(), "quit now"),
+            row(key("quit"), "save workspace"),
+            row("Ctrl-c".into(), "kill session"),
             row(key("help"), "this window"),
         ]
     }
 
     fn mode_badge_style(&self) -> Style {
+        if self.kill_pending || self.quit_pending {
+            return Style::default()
+                .fg(SURFACE)
+                .bg(ERROR)
+                .add_modifier(Modifier::BOLD);
+        }
         if self.help || self.prefix {
             return Style::default()
                 .fg(FOREGROUND)
@@ -1090,6 +1286,12 @@ impl App {
     }
 
     pub fn mode_label(&self) -> &'static str {
+        if self.kill_pending {
+            return "KILL";
+        }
+        if self.quit_pending {
+            return if self.tabs.is_empty() { "QUIT" } else { "SAVE" };
+        }
         if self.help {
             return "HELP";
         }
@@ -1188,6 +1390,32 @@ impl App {
         self.quit_pending
     }
 
+    pub fn kill_prompt(&self) -> bool {
+        self.kill_pending
+    }
+
+    fn persist_quit(&mut self) {
+        if !self.tabs.is_empty() {
+            let tabs = self
+                .tabs
+                .iter()
+                .map(|tab| WorkspaceTab {
+                    slug: tab.law_ref.slug.to_string(),
+                    citation: tab.current_citation().unwrap_or("").to_string(),
+                })
+                .collect();
+            self.session_id = Some(self.workspaces.save(self.session_id, self.active, tabs));
+        }
+        self.should_quit = true;
+    }
+
+    fn kill_quit(&mut self) {
+        if let Some(id) = self.session_id.take() {
+            self.workspaces.remove(id);
+        }
+        self.should_quit = true;
+    }
+
     pub fn help_open(&self) -> bool {
         self.help
     }
@@ -1202,10 +1430,6 @@ impl App {
 
     pub fn view_start(&self) -> usize {
         self.current_tab().map(|tab| tab.view_start).unwrap_or(0)
-    }
-
-    pub fn session(&self) -> &SessionStore {
-        &self.session
     }
 }
 
@@ -1698,7 +1922,9 @@ mod tests {
     use crate::catalog::LAWS;
     use crate::config::Config;
     use crate::fetch::LawLibrary;
+    use crate::session::{WorkspaceStore, WorkspaceTab};
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
     use std::path::Path;
 
@@ -1765,8 +1991,16 @@ mod tests {
             }
         }
         assert!(
-            joined.contains("quit") && (joined.contains("Ctrl-q") || joined.contains("Ctrl-Q")),
-            "missing quit: {joined}"
+            !joined.contains("quit now"),
+            "Ctrl-c is kill, not quit now: {joined}"
+        );
+        assert!(
+            joined.contains("kill") || joined.contains("Kill"),
+            "missing kill: {joined}"
+        );
+        assert!(
+            joined.contains("save") && (joined.contains("Ctrl-q") || joined.contains("Ctrl-Q")),
+            "missing save quit: {joined}"
         );
         assert!(
             joined.contains("this window"),
@@ -2487,17 +2721,217 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_q_then_n_cancels() {
+    fn ctrl_q_saves_open_tabs() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), Some("bgb"));
         app.handle_key(Key::Ctrl('q'));
-        app.handle_key(Key::Char('n'));
-        assert!(!app.should_quit);
-        assert!(!app.quit_prompt());
-        let first = app.current_citation().map(str::to_string);
+        app.handle_key(Key::Char('y'));
+        let store = WorkspaceStore::open(dir.path().join("sessions.json"));
+        let workspace = store.get(1).expect("saved workspace");
+        assert_eq!(workspace.tabs[0].slug, "bgb");
+        assert!(
+            !workspace.tabs[0].citation.is_empty(),
+            "citation {}",
+            workspace.tabs[0].citation
+        );
+        assert_eq!(store.mru_id(), Some(1));
+    }
+
+    #[test]
+    fn ctrl_q_menu_only_does_not_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.handle_key(Key::Ctrl('q'));
+        app.handle_key(Key::Char('y'));
+        assert!(app.should_quit);
+        let store = WorkspaceStore::open(dir.path().join("sessions.json"));
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn ctrl_q_second_save_overwrites_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), Some("bgb"));
+        app.handle_key(Key::Ctrl('q'));
+        app.handle_key(Key::Char('y'));
+        app.should_quit = false;
         app.handle_key(Key::Char('l'));
-        assert_eq!(app.mode_label(), "NORMAL");
-        assert_ne!(app.current_citation(), first.as_deref());
+        app.handle_key(Key::Ctrl('q'));
+        app.handle_key(Key::Char('y'));
+        let store = WorkspaceStore::open(dir.path().join("sessions.json"));
+        assert_eq!(store.list().len(), 1);
+        assert_eq!(store.get(1).unwrap().id, 1);
+    }
+
+    fn seed_workspace(dir: &Path, active: i32, tabs: Vec<WorkspaceTab>) -> u32 {
+        let mut store = WorkspaceStore::open(dir.join("sessions.json"));
+        store.save(None, active, tabs)
+    }
+
+    fn start_multi(dir: &Path, start: Start) -> Result<App, String> {
+        let bgb = SAMPLE.to_vec();
+        let gg = GG_SAMPLE.to_vec();
+        let library = LawLibrary::new(dir, move |slug| {
+            if slug == "gg" {
+                gg.clone()
+            } else {
+                bgb.clone()
+            }
+        });
+        App::try_start(
+            Config::new(dir.join("normen.conf")),
+            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            start,
+            false,
+        )
+    }
+
+    #[test]
+    fn attach_restores_tabs_citations_and_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            -1,
+            vec![
+                WorkspaceTab {
+                    slug: "bgb".into(),
+                    citation: "§ 433".into(),
+                },
+                WorkspaceTab {
+                    slug: "gg".into(),
+                    citation: "Art 1".into(),
+                },
+            ],
+        );
+        let app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        assert_eq!(app.tab_shortcuts(), vec!["BGB", "GG"]);
+        assert!(app.on_menu());
+        assert_eq!(
+            WorkspaceStore::open(dir.path().join("sessions.json")).mru_id(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn attach_without_sessions_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = start_multi(dir.path(), Start::Attach { id: None })
+            .err()
+            .expect("attach should fail");
+        assert!(
+            err.contains("no persisted session"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn attach_restores_active_law_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![
+                WorkspaceTab {
+                    slug: "bgb".into(),
+                    citation: "§ 433".into(),
+                },
+                WorkspaceTab {
+                    slug: "gg".into(),
+                    citation: "Art 1".into(),
+                },
+            ],
+        );
+        let app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        assert!(!app.on_menu());
+        assert_eq!(app.tab_shortcuts()[0], "BGB");
+        assert_eq!(app.current_citation(), Some("§ 433"));
+    }
+
+    #[test]
+    fn attach_failed_load_does_not_rewrite_json() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![WorkspaceTab {
+                slug: "bgb".into(),
+                citation: "§ 433".into(),
+            }],
+        );
+        let path = dir.path().join("sessions.json");
+        let before = std::fs::read(&path).unwrap();
+        let app = App::try_start(
+            Config::new(dir.path().join("normen.conf")),
+            Box::new(|_, _| Err("download failed".into())),
+            Start::Attach { id: Some(1) },
+            false,
+        )
+        .unwrap();
+        assert!(app.load_error.is_some());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn ctrl_q_overlay_explains_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), Some("bgb"));
+        app.handle_key(Key::Ctrl('q'));
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("Save"), "{joined}");
+        assert!(
+            joined.contains("workspace") && joined.contains("quit"),
+            "{joined}"
+        );
+        assert!(joined.contains('y') && joined.contains("Esc"), "{joined}");
+        app.handle_key(Key::Char('n'));
+        assert!(app.quit_prompt(), "only Esc should cancel");
+        app.handle_key(Key::Esc);
+        assert!(!app.quit_prompt());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_overlay_explains_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![WorkspaceTab {
+                slug: "bgb".into(),
+                citation: "§ 433".into(),
+            }],
+        );
+        let mut app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        app.handle_key(Key::Ctrl('c'));
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("Kill"), "{joined}");
+        assert!(
+            joined.contains("without saving") && joined.contains("delete"),
+            "{joined}"
+        );
+        assert!(joined.contains("Esc"), "{joined}");
+    }
+
+    #[test]
+    fn help_overlay_is_yellow() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.handle_key(Key::Char('?'));
+        let buffer = render_buffer(&mut app, 80, 24);
+        assert_chrome_fg(&buffer, "Keys", ACCENT);
+        assert_chrome_fg(&buffer, "close", ACCENT);
+        assert_text_fg(&buffer, "scroll", FOREGROUND);
+    }
+
+    #[test]
+    fn quit_overlay_is_red() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), Some("bgb"));
+        app.handle_key(Key::Ctrl('q'));
+        let buffer = render_buffer(&mut app, 80, 24);
+        assert_chrome_fg(&buffer, "Save", ERROR);
+        assert_chrome_fg(&buffer, "cancel", ERROR);
+        assert_text_fg(&buffer, "workspace", FOREGROUND);
     }
 
     #[test]
@@ -2529,6 +2963,97 @@ mod tests {
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
         assert!(line.contains("0:MENU"));
+    }
+
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_joined(app: &mut App, width: u16, height: u16) -> String {
+        let buffer = render_buffer(app, width, height);
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assert_text_fg(buffer: &ratatui::buffer::Buffer, needle: &str, expected: Color) {
+        let width = buffer.area().width;
+        let height = buffer.area().height;
+        let n = needle.chars().count() as u16;
+        let mut found = false;
+        for y in 0..height {
+            for x in 0..=width.saturating_sub(n) {
+                let got: String = (0..n)
+                    .map(|i| buffer[(x + i, y)].symbol().to_string())
+                    .collect();
+                if got == needle {
+                    found = true;
+                    for i in 0..n {
+                        assert_eq!(
+                            buffer[(x + i, y)].fg,
+                            expected,
+                            "{needle} should be {expected:?}, got {:?}",
+                            buffer[(x + i, y)].fg
+                        );
+                    }
+                }
+            }
+        }
+        assert!(found, "missing overlay text {needle}");
+    }
+
+    fn assert_chrome_fg(buffer: &ratatui::buffer::Buffer, needle: &str, expected: Color) {
+        let width = buffer.area().width;
+        let height = buffer.area().height;
+        let n = needle.chars().count() as u16;
+        let mut found = false;
+        for y in 0..height {
+            let row_has_border = (0..width).any(|x| {
+                matches!(buffer[(x, y)].symbol(), "─" | "┌" | "┐" | "└" | "┘")
+            });
+            if !row_has_border {
+                continue;
+            }
+            for x in 0..=width.saturating_sub(n) {
+                let got: String = (0..n)
+                    .map(|i| buffer[(x + i, y)].symbol().to_string())
+                    .collect();
+                if got == needle {
+                    found = true;
+                    for i in 0..n {
+                        assert_eq!(
+                            buffer[(x + i, y)].fg,
+                            expected,
+                            "{needle} chrome should be {expected:?}, got {:?}",
+                            buffer[(x + i, y)].fg
+                        );
+                    }
+                }
+            }
+        }
+        assert!(found, "missing overlay chrome {needle}");
+        let mut found_border = false;
+        for y in 0..height {
+            for x in 0..width {
+                if matches!(buffer[(x, y)].symbol(), "─" | "│" | "┌" | "┐" | "└" | "┘") {
+                    assert_eq!(
+                        buffer[(x, y)].fg,
+                        expected,
+                        "overlay border should be {expected:?}"
+                    );
+                    found_border = true;
+                }
+            }
+        }
+        assert!(found_border, "missing overlay border");
     }
 
     fn render_line(app: &mut App, width: u16, height: u16, y: u16) -> String {
@@ -2812,11 +3337,83 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits() {
+    fn ctrl_c_asks_then_y_quits_without_saving() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
         app.handle_key(Key::Ctrl('c'));
+        assert!(!app.should_quit);
+        assert!(app.kill_prompt());
+        app.handle_key(Key::Char('y'));
         assert!(app.should_quit);
+        assert!(WorkspaceStore::open(dir.path().join("sessions.json"))
+            .list()
+            .is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_deletes_attached_session() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![WorkspaceTab {
+                slug: "bgb".into(),
+                citation: "§ 433".into(),
+            }],
+        );
+        let mut app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        app.handle_key(Key::Ctrl('c'));
+        app.handle_key(Key::Char('y'));
+        assert!(app.should_quit);
+        assert!(WorkspaceStore::open(dir.path().join("sessions.json"))
+            .get(1)
+            .is_none());
+    }
+
+    #[test]
+    fn ctrl_c_n_keeps_attached_session() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![WorkspaceTab {
+                slug: "bgb".into(),
+                citation: "§ 433".into(),
+            }],
+        );
+        let mut app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        app.handle_key(Key::Ctrl('c'));
+        app.handle_key(Key::Char('n'));
+        assert!(app.kill_prompt(), "only Esc should cancel");
+        app.handle_key(Key::Esc);
+        assert!(!app.should_quit);
+        assert!(!app.kill_prompt());
+        assert!(WorkspaceStore::open(dir.path().join("sessions.json"))
+            .get(1)
+            .is_some());
+    }
+
+    #[test]
+    fn ctrl_c_replaces_quit_pending_with_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_workspace(
+            dir.path(),
+            0,
+            vec![WorkspaceTab {
+                slug: "bgb".into(),
+                citation: "§ 433".into(),
+            }],
+        );
+        let mut app = start_multi(dir.path(), Start::Attach { id: Some(1) }).unwrap();
+        app.handle_key(Key::Ctrl('q'));
+        assert!(app.quit_prompt());
+        app.handle_key(Key::Ctrl('c'));
+        assert!(!app.quit_prompt());
+        assert!(app.kill_prompt());
+        app.handle_key(Key::Char('y'));
+        assert!(WorkspaceStore::open(dir.path().join("sessions.json"))
+            .get(1)
+            .is_none());
     }
 
     #[test]
