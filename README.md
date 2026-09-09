@@ -8,6 +8,31 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 **BauNVO**, **VwZG**, **VwVG**, **StGB**, **ZPO**, **StPO**, **HGB**,
 **EGBGB**.
 
+## Features
+
+- Full-text reader for the bundled statutes, always opened in a new tab
+- MENU catalog with `/` filter and `i` shortcut jump
+- Vim motion in a law: line (`j`/`k`), paragraph (`J`/`K`), norm (`h`/`l`)
+- Citation jump (PARA) and in-law `/` search with highlighted hits
+- tmux-style tabs (`Ctrl-n` then `n`/`p`/`x`/`m`/`0`–`9`)
+- Workspaces you save explicitly; never auto-resumed
+- Remappable keys in the config file
+
+## Files
+
+| Path | Purpose |
+| --- | --- |
+| `~/.normen/sessions.json` | Persisted workspaces (tabs, citations, active tab, MRU) |
+| `~/.normen/*.xml` | Downloaded law cache |
+| `~/.config/normen/normen.conf` | Keybindings and settings (created on first run) |
+
+Bare `normen` always starts a **new unsaved** workspace (MENU, or one tab if
+you pass a law). Use `normen attach` for the last saved one, or
+`normen attach <id>`. `normen list` / `normen rm` manage the JSON file.
+**Ctrl-q** then `y` writes a row (MENU-only quit writes nothing).
+**Ctrl-c** then `y` quits without saving and deletes that session id if any.
+**Esc** cancels either overlay. `--refresh` re-downloads cached laws.
+
 ## Usage
 
 ```bash
@@ -17,8 +42,6 @@ cargo test
 
 Or jump straight in: `cargo run -- bgb`, `cargo run -- BGB 433`, `cargo run -- gg /würde`.
 
-`normen` always starts a **new unsaved** workspace (MENU, or one tab if you pass a law). It does not resume the last session.
-
 ```bash
 normen attach        # last saved workspace (error if none)
 normen attach 3      # workspace id 3
@@ -26,8 +49,6 @@ normen list          # id and open tabs
 normen rm 3
 normen rm --all
 ```
-
-Workspaces are stored in `~/.normen/sessions.json`. **Ctrl-q** then `y` saves the open tabs (law + citation + which tab is active). **Esc** cancels. A MENU-only quit does not create a row. **Ctrl-c** then `y` quits without saving and **deletes** that session if it had an id; **Esc** cancels.
 
 Opening a law shows the full text and **always creates a new tab**. The same
 law can be open twice; each tab has its own position. The command line sits
@@ -85,11 +106,3 @@ normal mode.
 
 On the law picker, `i` still focuses the shortcut field (`BGB`, `gg`, …)
 for an exact jump. `/` searches the list.
-
-Keybindings and other settings live in `~/.config/normen/normen.conf`
-(created on first run). Law texts are cached in `~/.normen/`. Use
-`--refresh` to download the laws again.
-
-```bash
-cargo test
-```
