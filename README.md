@@ -16,7 +16,7 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 - Citation jump (PARA) and in-law `/` search with highlighted hits
 - tmux-style tabs (`Ctrl-n` then `n`/`p`/`x`/`m`/`0`–`9`)
 - Workspaces you save explicitly; never auto-resumed
-- Remappable keys in the config file
+- Remappable keys and colors in the config file
 
 ## Files
 
@@ -24,7 +24,12 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 | --- | --- |
 | `~/.normen/sessions.json` | Persisted workspaces (tabs, citations, active tab, MRU) |
 | `~/.normen/*.xml` | Downloaded law cache |
-| `~/.config/normen/normen.conf` | Keybindings and settings (created on first run) |
+| `~/.config/normen/normen.conf` | Keybindings and `[theme]` colors (created on first run) |
+
+A new conf file includes a commented `[theme]` block with the default hex values.
+Uncomment and set tokens as quoted `#rrggbb` (`primary = "#9ce5c0"`). Names are
+case-insensitive. Invalid or omitted tokens keep the compiled defaults. Restart
+to apply. Existing conf files are never patched.
 
 Bare `normen` always starts a **new unsaved** workspace (MENU, or one tab if
 you pass a law). Use `normen attach` for the last saved one, or

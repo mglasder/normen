@@ -42,6 +42,18 @@ tab_next = n
 tab_prev = p
 tab_close = x
 tab_menu = m
+
+# [theme]
+# primary = \"#9ce5c0\"
+# secondary = \"#a3b8ef\"
+# accent = \"#f5d595\"
+# foreground = \"#ced4df\"
+# background = \"#10171e\"
+# error = \"#ef8891\"
+# surface = \"#131a21\"
+# border = \"#40474e\"
+# highlight_bg = \"#2a3138\"
+# search_fg = \"#10171e\"
 ";
 
 pub fn default_keys() -> HashMap<String, String> {
@@ -222,7 +234,26 @@ fn tab_suffix(value: &str, default: &str) -> String {
 }
 
 fn clean(value: &str) -> String {
+    let trimmed = value.trim();
+    let quote = match trimmed.chars().next() {
+        Some(q @ ('"' | '\'')) => Some(q),
+        _ => None,
+    };
+    if let Some(q) = quote {
+        if let Some(end) = trimmed[1..].find(q) {
+            return trimmed[1..1 + end].trim().to_string();
+        }
+    }
+    if is_hex_color(trimmed) {
+        return trimmed.to_string();
+    }
     value.split('#').next().unwrap_or("").trim().to_string()
+}
+
+fn is_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -362,5 +393,37 @@ mod tests {
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("[reader]\nback = Q\n"));
+    }
+
+    #[test]
+    fn default_text_comments_theme_tokens() {
+        assert!(DEFAULT_TEXT.contains("# [theme]"));
+        assert!(DEFAULT_TEXT.contains("# primary = \"#9ce5c0\""));
+        assert!(DEFAULT_TEXT.contains("# search_fg = \"#10171e\""));
+        assert!(!DEFAULT_TEXT.lines().any(|l| l.starts_with("[theme]")));
+    }
+
+    #[test]
+    fn clean_keeps_quoted_hash_and_strips_trailing_comment() {
+        assert_eq!(clean(" \"#9ce5c0\"  # gold "), "#9ce5c0");
+        assert_eq!(clean(" '#FF0000' # red "), "#FF0000");
+    }
+
+    #[test]
+    fn clean_quoted_keymap_still_strips_comment() {
+        assert_eq!(clean(" \"d\" # vim "), "d");
+    }
+
+    #[test]
+    fn clean_unquoted_hash_still_strips() {
+        assert_eq!(clean("j  # vim"), "j");
+    }
+
+    #[test]
+    fn quoted_key_value_overrides_move_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "[keys]\nmove_down = \"d\" # vim\n").unwrap();
+        assert_eq!(Config::new(&path).keymap().get("move_down").unwrap(), "d");
     }
 }

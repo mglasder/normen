@@ -27,10 +27,7 @@ use crate::session::{WorkspaceStore, WorkspaceTab};
 
 use self::menu::{para_char, MenuState};
 use self::reader::ReaderTab;
-use self::theme::{
-    ACCENT, BACKGROUND, BORDER, ERROR, FOREGROUND, HIGHLIGHT_BG, PRIMARY, SEARCH_FG, SECONDARY,
-    SURFACE,
-};
+use self::theme::Theme;
 
 pub const WINDOW_RADIUS: usize = 16;
 
@@ -760,8 +757,9 @@ impl App {
         ])
         .split(area);
 
+        let theme = self.theme();
         frame.render_widget(
-            Paragraph::new(self.tab_line()).style(Style::default().bg(SURFACE)),
+            Paragraph::new(self.tab_line()).style(Style::default().bg(theme.surface)),
             chunks[0],
         );
         self.draw_cmd(frame, chunks[1]);
@@ -787,7 +785,8 @@ impl App {
     }
 
     fn draw_cmd(&self, frame: &mut Frame<'_>, area: Rect) {
-        let style = Style::default().bg(SURFACE).fg(FOREGROUND);
+        let theme = self.theme();
+        let style = Style::default().bg(theme.surface).fg(theme.foreground);
         frame.render_widget(Block::new().style(style), area);
         let inner = Block::new()
             .padding(Padding::horizontal(1))
@@ -811,7 +810,8 @@ impl App {
     }
 
     fn draw_body(&self, frame: &mut Frame<'_>, area: Rect) {
-        frame.render_widget(Block::new().style(Style::default().bg(BACKGROUND)), area);
+        let theme = self.theme();
+        frame.render_widget(Block::new().style(Style::default().bg(theme.background)), area);
         if self.on_menu() {
             self.draw_menu(frame, area);
             return;
@@ -848,20 +848,28 @@ impl App {
             width: inner.width.saturating_sub(1),
             height: inner.height,
         };
+        let theme = self.theme();
         let query = self.menu.cmd.trim_start_matches('/');
         let items: Vec<ListItem> = self
             .menu
             .filtered
             .iter()
-            .map(|law| ListItem::new(menu_row(law, query, self.menu.mode == Mode::Search)))
+            .map(|law| {
+                ListItem::new(menu_row(
+                    law,
+                    query,
+                    self.menu.mode == Mode::Search,
+                    &theme,
+                ))
+            })
             .collect();
         let mut state = ListState::default();
         if !items.is_empty() {
             state.select(Some(self.menu.highlight.min(items.len().saturating_sub(1))));
         }
         let list = List::new(items)
-            .style(Style::default().bg(BACKGROUND).fg(FOREGROUND))
-            .highlight_style(Style::default().bg(HIGHLIGHT_BG).fg(FOREGROUND))
+            .style(Style::default().bg(theme.background).fg(theme.foreground))
+            .highlight_style(Style::default().bg(theme.highlight_bg).fg(theme.foreground))
             .highlight_symbol("");
         frame.render_stateful_widget(list, list_area, &mut state);
         draw_scrollbar(
@@ -869,6 +877,7 @@ impl App {
             inner,
             self.menu.highlight,
             self.menu.filtered.len().max(1),
+            &theme,
         );
     }
 
@@ -882,6 +891,7 @@ impl App {
         if inner.width <= 1 {
             return;
         }
+        let theme = self.theme();
         let card_width = inner.width.saturating_sub(1);
         let query = tab.cmd.trim_start_matches('/');
         let mut y = inner.y;
@@ -890,17 +900,17 @@ impl App {
                 break;
             }
             let bg = if index == tab.hit_highlight {
-                HIGHLIGHT_BG
+                theme.highlight_bg
             } else {
-                SURFACE
+                theme.surface
             };
-            let lines = search_card_lines(hit, query, &tab.law.abbreviation, card_width, bg);
+            let lines = search_card_lines(hit, query, &tab.law.abbreviation, card_width, bg, &theme);
             let height = (lines.len() as u16).min(inner.bottom().saturating_sub(y));
             if height == 0 {
                 break;
             }
             frame.render_widget(
-                Paragraph::new(lines).style(Style::default().bg(bg).fg(FOREGROUND)),
+                Paragraph::new(lines).style(Style::default().bg(bg).fg(theme.foreground)),
                 Rect {
                     x: inner.x,
                     y,
@@ -915,6 +925,7 @@ impl App {
             inner,
             tab.hit_highlight,
             tab.hits.len().max(1),
+            &theme,
         );
     }
 
@@ -928,6 +939,7 @@ impl App {
         if inner.width <= 1 || tab.law.norms.is_empty() {
             return;
         }
+        let theme = self.theme();
         let card_width = inner.width.saturating_sub(1);
         let mut y = inner.y;
         let mut skip = tab.skip_lines;
@@ -940,11 +952,12 @@ impl App {
                 &tab.law.abbreviation,
                 index == tab.current,
                 card_width,
+                &theme,
             );
             lines.push(filled_line(
                 "",
                 card_width,
-                Style::default().bg(BACKGROUND),
+                Style::default().bg(theme.background),
             ));
             if skip >= lines.len() {
                 skip -= lines.len();
@@ -974,10 +987,12 @@ impl App {
             inner,
             tab.current,
             tab.law.norms.len().max(1),
+            &theme,
         );
     }
 
     fn tab_line(&self) -> Line<'static> {
+        let theme = self.theme();
         let mut spans = Vec::new();
         let menu_marker = if self.active < 0 {
             "*"
@@ -988,13 +1003,13 @@ impl App {
         };
         let menu_style = if self.active < 0 {
             Style::default()
-                .fg(SURFACE)
-                .bg(PRIMARY)
+                .fg(theme.surface)
+                .bg(theme.primary)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
-                .fg(FOREGROUND)
-                .bg(BORDER)
+                .fg(theme.foreground)
+                .bg(theme.border)
                 .add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(format!(" 0:MENU{menu_marker} "), menu_style));
@@ -1014,22 +1029,23 @@ impl App {
             );
             let style = if index as i32 == self.active {
                 Style::default()
-                    .fg(SURFACE)
-                    .bg(PRIMARY)
+                    .fg(theme.surface)
+                    .bg(theme.primary)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-                    .fg(FOREGROUND)
-                    .bg(BORDER)
+                    .fg(theme.foreground)
+                    .bg(theme.border)
                     .add_modifier(Modifier::BOLD)
             };
             spans.push(Span::styled(label, style));
         }
-        Line::from(spans).style(Style::default().bg(SURFACE))
+        Line::from(spans).style(Style::default().bg(theme.surface))
     }
 
     fn draw_status(&self, frame: &mut Frame<'_>, area: Rect) {
-        let bar_style = Style::default().bg(SURFACE).fg(FOREGROUND);
+        let theme = self.theme();
+        let bar_style = Style::default().bg(theme.surface).fg(theme.foreground);
         let pos = if self.kill_pending || self.quit_pending {
             String::new()
         } else if self.load_error.is_some() {
@@ -1041,8 +1057,8 @@ impl App {
         };
         let pos_style = if self.quit_pending || self.kill_pending || self.load_error.is_some() {
             Style::default()
-                .bg(SURFACE)
-                .fg(ERROR)
+                .bg(theme.surface)
+                .fg(theme.error)
                 .add_modifier(Modifier::BOLD)
         } else {
             bar_style
@@ -1070,6 +1086,7 @@ impl App {
     }
 
     fn draw_help(&self, frame: &mut Frame<'_>, area: Rect) {
+        let theme = self.theme();
         let width = area.width.saturating_sub(4).min(64).max(24);
         let lines = self.help_lines();
         let height = (lines.len() as u16)
@@ -1088,18 +1105,19 @@ impl App {
         let block = Block::bordered()
             .title(" Keys ")
             .title_bottom(" Esc / ? close ")
-            .title_style(Style::default().fg(ACCENT))
-            .style(Style::default().bg(SURFACE).fg(FOREGROUND))
-            .border_style(Style::default().fg(ACCENT));
+            .title_style(Style::default().fg(theme.accent))
+            .style(Style::default().bg(theme.surface).fg(theme.foreground))
+            .border_style(Style::default().fg(theme.accent));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(SURFACE).fg(FOREGROUND)),
+            Paragraph::new(lines).style(Style::default().bg(theme.surface).fg(theme.foreground)),
             inner,
         );
     }
 
     fn draw_confirm(&self, frame: &mut Frame<'_>, area: Rect) {
+        let theme = self.theme();
         let (title, body) = self.confirm_copy();
         let width = area.width.saturating_sub(8).min(52).max(28);
         let height = (body.len() as u16)
@@ -1118,9 +1136,9 @@ impl App {
         let block = Block::bordered()
             .title(title)
             .title_bottom(" y confirm   Esc cancel ")
-            .title_style(Style::default().fg(ERROR))
-            .style(Style::default().bg(SURFACE).fg(FOREGROUND))
-            .border_style(Style::default().fg(ERROR));
+            .title_style(Style::default().fg(theme.error))
+            .style(Style::default().bg(theme.surface).fg(theme.foreground))
+            .border_style(Style::default().fg(theme.error));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
         let lines: Vec<Line<'static>> = body
@@ -1128,12 +1146,12 @@ impl App {
             .map(|text| {
                 Line::from(Span::styled(
                     format!(" {text}"),
-                    Style::default().fg(FOREGROUND),
+                    Style::default().fg(theme.foreground),
                 ))
             })
             .collect();
         frame.render_widget(
-            Paragraph::new(lines).style(Style::default().bg(SURFACE).fg(FOREGROUND)),
+            Paragraph::new(lines).style(Style::default().bg(theme.surface).fg(theme.foreground)),
             inner,
         );
     }
@@ -1177,19 +1195,20 @@ impl App {
     }
 
     fn help_lines(&self) -> Vec<Line<'static>> {
+        let theme = self.theme();
         let keys = self.config.keymap();
         let key = |name: &str| pretty_binding(keys.get(name).map(String::as_str).unwrap_or(""));
         let row = |left: String, right: &str| {
             Line::from(vec![
-                Span::styled(format!("  {left:<18}"), Style::default().fg(PRIMARY)),
-                Span::styled(right.to_string(), Style::default().fg(FOREGROUND)),
+                Span::styled(format!("  {left:<18}"), Style::default().fg(theme.primary)),
+                Span::styled(right.to_string(), Style::default().fg(theme.foreground)),
             ])
         };
         let heading = |text: &str| {
             Line::from(Span::styled(
                 format!(" {text}"),
                 Style::default()
-                    .fg(SECONDARY)
+                    .fg(theme.secondary)
                     .add_modifier(Modifier::BOLD),
             ))
         };
@@ -1243,30 +1262,31 @@ impl App {
     }
 
     fn mode_badge_style(&self) -> Style {
+        let theme = self.theme();
         if self.kill_pending || self.quit_pending {
             return Style::default()
-                .fg(SURFACE)
-                .bg(ERROR)
+                .fg(theme.surface)
+                .bg(theme.error)
                 .add_modifier(Modifier::BOLD);
         }
         if self.help || self.prefix {
             return Style::default()
-                .fg(FOREGROUND)
-                .bg(BORDER)
+                .fg(theme.foreground)
+                .bg(theme.border)
                 .add_modifier(Modifier::BOLD);
         }
         match self.screen_mode() {
             Mode::Normal => Style::default()
-                .fg(PRIMARY)
-                .bg(SURFACE)
+                .fg(theme.primary)
+                .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
             Mode::Para | Mode::Insert => Style::default()
-                .fg(SEARCH_FG)
-                .bg(ACCENT)
+                .fg(theme.search_fg)
+                .bg(theme.accent)
                 .add_modifier(Modifier::BOLD),
             Mode::Search => Style::default()
-                .fg(SEARCH_FG)
-                .bg(SECONDARY)
+                .fg(theme.search_fg)
+                .bg(theme.secondary)
                 .add_modifier(Modifier::BOLD),
         }
     }
@@ -1418,6 +1438,10 @@ impl App {
 
     pub fn help_open(&self) -> bool {
         self.help
+    }
+
+    fn theme(&self) -> Theme {
+        Theme::from_config(&self.config)
     }
 
     pub fn mounted_len(&self) -> usize {
@@ -1583,14 +1607,14 @@ fn install_panic_hook() {
     }));
 }
 
-fn menu_row(law: &LawRef, query: &str, searching: bool) -> Line<'static> {
+fn menu_row(law: &LawRef, query: &str, searching: bool, theme: &Theme) -> Line<'static> {
     let shortcut = format!("{:<10}", law.shortcut);
     if searching {
-        let mut spans = styled_to_line(&highlight_text(&shortcut, query)).spans;
+        let mut spans = styled_to_line(&highlight_text(&shortcut, query), theme).spans;
         for span in &mut spans {
             span.style = span.style.add_modifier(Modifier::BOLD);
         }
-        spans.extend(styled_to_line(&highlight_text(law.title, query)).spans);
+        spans.extend(styled_to_line(&highlight_text(law.title, query), theme).spans);
         Line::from(spans)
     } else {
         Line::from(vec![
@@ -1600,14 +1624,14 @@ fn menu_row(law: &LawRef, query: &str, searching: bool) -> Line<'static> {
     }
 }
 
-fn styled_to_line(text: &crate::search::StyledText) -> Line<'static> {
-    styled_to_lines(text)
+fn styled_to_line(text: &crate::search::StyledText, theme: &Theme) -> Line<'static> {
+    styled_to_lines(text, theme)
         .into_iter()
         .next()
         .unwrap_or_else(|| Line::from(""))
 }
 
-fn styled_to_lines(text: &crate::search::StyledText) -> Vec<Line<'static>> {
+fn styled_to_lines(text: &crate::search::StyledText, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     let mut pos = 0usize;
     let mut events: Vec<(usize, usize, Option<&str>)> = Vec::new();
@@ -1639,7 +1663,7 @@ fn styled_to_lines(text: &crate::search::StyledText) -> Vec<Line<'static>> {
             }
             lines.last_mut().unwrap().push(Span::styled(
                 piece.to_string(),
-                span_style(style),
+                span_style(style, theme),
             ));
         }
     }
@@ -1655,11 +1679,11 @@ fn styled_to_lines(text: &crate::search::StyledText) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn span_style(style: Option<&str>) -> Style {
+fn span_style(style: Option<&str>, theme: &Theme) -> Style {
     match style {
-        Some(style) if style.contains("f5d595") => Style::default()
-            .fg(SEARCH_FG)
-            .bg(ACCENT)
+        Some(style) if style.contains("search-hit") => Style::default()
+            .fg(theme.search_fg)
+            .bg(theme.accent)
             .add_modifier(Modifier::BOLD),
         Some(style) if style.contains("bold") => {
             Style::default().add_modifier(Modifier::BOLD)
@@ -1668,7 +1692,7 @@ fn span_style(style: Option<&str>) -> Style {
     }
 }
 
-fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, index: usize, total: usize) {
+fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, index: usize, total: usize, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -1679,7 +1703,7 @@ fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, index: usize, total: usize)
         height: area.height,
     };
     frame.render_widget(
-        Block::new().style(Style::default().bg(BACKGROUND)),
+        Block::new().style(Style::default().bg(theme.background)),
         track,
     );
     if total == 0 || area.height == 0 {
@@ -1693,7 +1717,7 @@ fn draw_scrollbar(frame: &mut Frame<'_>, area: Rect, index: usize, total: usize)
         ((index.min(total - 1) as u16) * max_y) / (total as u16 - 1)
     };
     frame.render_widget(
-        Block::new().style(Style::default().bg(HIGHLIGHT_BG)),
+        Block::new().style(Style::default().bg(theme.highlight_bg)),
         Rect {
             x: track.x,
             y: area.y + thumb_y,
@@ -1709,7 +1733,7 @@ pub(crate) fn search_card_height(
     abbreviation: &str,
     width: u16,
 ) -> u16 {
-    search_card_lines(hit, query, abbreviation, width, SURFACE)
+    search_card_lines(hit, query, abbreviation, width, Theme::default().surface, &Theme::default())
         .len()
         .max(1) as u16
 }
@@ -1720,12 +1744,13 @@ fn search_card_lines(
     abbreviation: &str,
     width: u16,
     bg: ratatui::style::Color,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let style = Style::default().bg(bg).fg(FOREGROUND);
+    let style = Style::default().bg(bg).fg(theme.foreground);
     let inner_width = width.saturating_sub(2) as usize;
     let mut lines = vec![filled_line("", width, style)];
     let prompt = format_search_hit(hit, query, abbreviation);
-    for line in styled_to_lines(&prompt) {
+    for line in styled_to_lines(&prompt, theme) {
         lines.push(pad_line(line, inner_width, style, width));
     }
     lines.push(filled_line("", width, style));
@@ -1737,16 +1762,17 @@ fn norm_card_lines(
     abbreviation: &str,
     current: bool,
     width: u16,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let card = Style::default().bg(SURFACE).fg(FOREGROUND);
+    let card = Style::default().bg(theme.surface).fg(theme.foreground);
     let mark = if current { "▏" } else { " " };
     let mark_style = if current {
-        Style::default().fg(PRIMARY).bg(SURFACE)
+        Style::default().fg(theme.primary).bg(theme.surface)
     } else {
-        Style::default().fg(SURFACE).bg(SURFACE)
+        Style::default().fg(theme.surface).bg(theme.surface)
     };
     let heading_style = if norm.keys.is_empty() && norm.text.trim().is_empty() {
-        card.fg(SECONDARY).add_modifier(Modifier::BOLD)
+        card.fg(theme.secondary).add_modifier(Modifier::BOLD)
     } else {
         card.add_modifier(Modifier::BOLD)
     };
@@ -1810,7 +1836,7 @@ pub(crate) fn card_span(
     abbreviation: &str,
     width: u16,
 ) -> usize {
-    norm_card_lines(norm, abbreviation, false, width)
+    norm_card_lines(norm, abbreviation, false, width, &Theme::default())
         .len()
         .saturating_add(1)
 }
@@ -1923,6 +1949,7 @@ mod tests {
     use crate::config::Config;
     use crate::fetch::LawLibrary;
     use crate::session::{WorkspaceStore, WorkspaceTab};
+    use super::theme::{ACCENT, ERROR, FOREGROUND, PRIMARY, SEARCH_FG, SECONDARY, SURFACE};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
@@ -2921,6 +2948,20 @@ mod tests {
         assert_chrome_fg(&buffer, "Keys", ACCENT);
         assert_chrome_fg(&buffer, "close", ACCENT);
         assert_text_fg(&buffer, "scroll", FOREGROUND);
+    }
+
+    #[test]
+    fn help_overlay_chrome_uses_config_accent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("normen.conf"),
+            "[theme]\naccent = \"#ff0000\"\n",
+        )
+        .unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.handle_key(Key::Char('?'));
+        let buffer = render_buffer(&mut app, 80, 24);
+        assert_chrome_fg(&buffer, "Keys", Color::Rgb(0xff, 0, 0));
     }
 
     #[test]

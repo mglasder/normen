@@ -7,7 +7,7 @@ use crate::models::{CitationKey, Law, Norm, SearchHit};
 
 const MIN_FUZZY_SCORE: i64 = 70;
 const PREVIEW_WIDTH: usize = 80;
-const HIGHLIGHT_STYLE: &str = "bold #10171e on #f5d595";
+const HIGHLIGHT_STYLE: &str = "search-hit";
 
 static QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\A(?:§§?|art(?:ikel)?)?\s*(\d+)\s*([a-zäöü])?\s*\z").unwrap()
@@ -622,17 +622,13 @@ mod tests {
         assert!(rendered
             .spans
             .iter()
-            .any(|span| span.style.contains("f5d595")));
-        assert!(rendered
-            .spans
-            .iter()
-            .any(|span| span.style.to_lowercase().contains("on #")));
+            .any(|span| span.style.contains("search-hit")));
     }
 
     fn highlighted_piece(text: &StyledText) -> String {
         text.spans
             .iter()
-            .find(|span| span.style.contains("f5d595"))
+            .find(|span| span.style.contains("search-hit"))
             .map(|span| text.plain[span.start..span.end].to_string())
             .unwrap_or_default()
     }
@@ -660,7 +656,7 @@ mod tests {
             prompt
                 .spans
                 .iter()
-                .any(|span| span.style.contains("f5d595")
+                .any(|span| span.style.contains("search-hit")
                     && prompt.plain[span.start..span.end].contains("433")),
             "citation number should be highlighted: {prompt:?}"
         );
