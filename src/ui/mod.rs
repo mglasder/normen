@@ -1947,7 +1947,7 @@ mod tests {
     use super::*;
     use crate::catalog::LAWS;
     use crate::config::Config;
-    use crate::fetch::LawLibrary;
+    use crate::fetch::load_law;
     use crate::session::{WorkspaceStore, WorkspaceTab};
     use super::theme::{ACCENT, ERROR, FOREGROUND, PRIMARY, SEARCH_FG, SECONDARY, SURFACE};
     use ratatui::backend::TestBackend;
@@ -1964,10 +1964,12 @@ mod tests {
 
     fn sample_app(dir: &Path, initial_law: Option<&str>, initial_norm: Option<&str>) -> App {
         let xml = SAMPLE.to_vec();
-        let library = LawLibrary::new(dir, move |_| xml.clone());
+        let cache = dir.to_path_buf();
         App::new(
             Config::new(dir.join("normen.conf")),
-            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            Box::new(move |law_ref, refresh| {
+                load_law(&cache, |_| Ok(xml.clone()), law_ref, refresh)
+            }),
             initial_law.map(str::to_string),
             initial_norm.map(str::to_string),
             false,
@@ -1977,16 +1979,23 @@ mod tests {
     fn multi_app(dir: &Path) -> App {
         let bgb = SAMPLE.to_vec();
         let gg = GG_SAMPLE.to_vec();
-        let library = LawLibrary::new(dir, move |slug| {
-            if slug == "gg" {
-                gg.clone()
-            } else {
-                bgb.clone()
-            }
-        });
+        let cache = dir.to_path_buf();
         App::new(
             Config::new(dir.join("normen.conf")),
-            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            Box::new(move |law_ref, refresh| {
+                load_law(
+                    &cache,
+                    |slug| {
+                        if slug == "gg" {
+                            Ok(gg.clone())
+                        } else {
+                            Ok(bgb.clone())
+                        }
+                    },
+                    law_ref,
+                    refresh,
+                )
+            }),
             None,
             None,
             false,
@@ -2059,10 +2068,12 @@ mod tests {
         }
         xml.push_str("</dokumente>");
         let xml = xml.into_bytes();
-        let library = LawLibrary::new(dir, move |_| xml.clone());
+        let cache = dir.to_path_buf();
         App::new(
             Config::new(dir.join("normen.conf")),
-            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            Box::new(move |law_ref, refresh| {
+                load_law(&cache, |_| Ok(xml.clone()), law_ref, refresh)
+            }),
             Some("bgb".into()),
             None,
             false,
@@ -2084,10 +2095,12 @@ mod tests {
 </dokumente>"#
             .as_bytes()
             .to_vec();
-        let library = LawLibrary::new(dir, move |_| xml.clone());
+        let cache = dir.to_path_buf();
         App::new(
             Config::new(dir.join("normen.conf")),
-            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            Box::new(move |law_ref, refresh| {
+                load_law(&cache, |_| Ok(xml.clone()), law_ref, refresh)
+            }),
             Some("stgb".into()),
             None,
             false,
@@ -2798,16 +2811,23 @@ mod tests {
     fn start_multi(dir: &Path, start: Start) -> Result<App, String> {
         let bgb = SAMPLE.to_vec();
         let gg = GG_SAMPLE.to_vec();
-        let library = LawLibrary::new(dir, move |slug| {
-            if slug == "gg" {
-                gg.clone()
-            } else {
-                bgb.clone()
-            }
-        });
+        let cache = dir.to_path_buf();
         App::try_start(
             Config::new(dir.join("normen.conf")),
-            Box::new(move |law_ref, refresh| Ok(library.load(law_ref, refresh))),
+            Box::new(move |law_ref, refresh| {
+                load_law(
+                    &cache,
+                    |slug| {
+                        if slug == "gg" {
+                            Ok(gg.clone())
+                        } else {
+                            Ok(bgb.clone())
+                        }
+                    },
+                    law_ref,
+                    refresh,
+                )
+            }),
             start,
             false,
         )

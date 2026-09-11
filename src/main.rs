@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use normen::cli::{apply_cli, parse_args, Command};
 use normen::config::{default_config_path, Config};
-use normen::fetch::{default_cache_dir, load_cached_law};
+use normen::fetch::{default_cache_dir, download_law_xml, load_law};
 use normen::session::WorkspaceStore;
 use normen::ui::{App, Start};
 
@@ -38,7 +38,9 @@ fn run() -> Result<(), String> {
             let cache = cache_dir.clone();
             let mut app = App::start_with_path(
                 config,
-                Box::new(move |law_ref, refresh| load_cached_law(&cache, law_ref, refresh)),
+                Box::new(move |law_ref, refresh| {
+                    load_law(&cache, download_law_xml, law_ref, refresh)
+                }),
                 Start::Attach { id },
                 refresh,
                 session_path,
@@ -52,7 +54,9 @@ fn run() -> Result<(), String> {
             let cache = cache_dir.clone();
             let mut app = App::start_with_path(
                 config,
-                Box::new(move |law_ref, refresh| load_cached_law(&cache, law_ref, refresh)),
+                Box::new(move |law_ref, refresh| {
+                    load_law(&cache, download_law_xml, law_ref, refresh)
+                }),
                 Start::Fresh { law, norm },
                 refresh,
                 session_path,
