@@ -3,6 +3,7 @@ use crate::document::law_pos_label;
 use crate::models::{Law, SearchHit};
 use crate::search::{lookup_norm, parse_citation_query, search_norms};
 
+use super::prompt::{Phase, SearchPrompt};
 use super::{window_range, Mode, WINDOW_RADIUS};
 
 pub struct ReaderTab {
@@ -11,8 +12,7 @@ pub struct ReaderTab {
     pub current: usize,
     pub mode: Mode,
     pub para: String,
-    pub cmd: String,
-    pub search_nav: bool,
+    pub prompt: Option<SearchPrompt>,
     pub hits: Vec<SearchHit>,
     pub hit_highlight: usize,
     pub hit_index: i32,
@@ -29,8 +29,7 @@ impl ReaderTab {
             current: 0,
             mode: Mode::Normal,
             para: String::new(),
-            cmd: String::new(),
-            search_nav: false,
+            prompt: None,
             hits: Vec::new(),
             hit_highlight: 0,
             hit_index: -1,
@@ -73,11 +72,26 @@ impl ReaderTab {
         };
         if let Some(needle) = raw.strip_prefix('/') {
             self.enter_search();
-            self.cmd = needle.to_string();
+            if let Some(prompt) = &mut self.prompt {
+                prompt.query = needle.to_string();
+            }
             self.render_results();
             return;
         }
         self.run_query(raw);
+    }
+
+    pub fn search_nav(&self) -> bool {
+        self.prompt
+            .as_ref()
+            .is_some_and(|p| p.phase == Phase::Navigating)
+    }
+
+    pub fn search_query(&self) -> &str {
+        self.prompt
+            .as_ref()
+            .map(SearchPrompt::filter_query)
+            .unwrap_or("")
     }
 
     pub fn enter_para(&mut self, seed: &str) {
@@ -87,41 +101,48 @@ impl ReaderTab {
 
     pub fn enter_search(&mut self) {
         if self.mode == Mode::Search {
-            self.search_nav = false;
+            self.resume_typing();
             return;
         }
-        self.search_nav = false;
-        self.cmd.clear();
+        self.prompt = Some(SearchPrompt::enter());
         self.hits.clear();
         self.hit_highlight = 0;
         self.mode = Mode::Search;
     }
 
+    pub fn resume_typing(&mut self) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.resume_typing();
+        }
+    }
+
     pub fn leave_search(&mut self) {
-        self.search_nav = false;
-        self.cmd.clear();
+        self.prompt = None;
         self.mode = Mode::Normal;
     }
 
     pub fn enter_normal(&mut self) {
         self.para.clear();
-        self.cmd.clear();
-        self.search_nav = false;
+        self.prompt = None;
         self.mode = Mode::Normal;
     }
 
     pub fn type_search(&mut self, ch: char) {
-        self.cmd.push(ch);
+        if let Some(prompt) = &mut self.prompt {
+            prompt.type_char(ch);
+        }
         self.render_results();
     }
 
     pub fn search_backspace(&mut self) {
-        self.cmd.pop();
+        if let Some(prompt) = &mut self.prompt {
+            prompt.backspace();
+        }
         self.render_results();
     }
 
     pub fn render_results(&mut self) {
-        let query = self.cmd.trim_start_matches('/');
+        let query = self.search_query().to_string();
         let keep = self
             .hits
             .get(self.hit_highlight)
@@ -132,9 +153,9 @@ impl ReaderTab {
             self.search_origin = 0;
             return;
         }
-        self.hits = search_norms(&self.law, query);
-        let exact = if parse_citation_query(query).is_some() {
-            lookup_norm(&self.law, query).map(|norm| norm.citation.clone())
+        self.hits = search_norms(&self.law, &query);
+        let exact = if parse_citation_query(&query).is_some() {
+            lookup_norm(&self.law, &query).map(|norm| norm.citation.clone())
         } else {
             None
         };
@@ -156,11 +177,12 @@ impl ReaderTab {
     }
 
     pub fn lock_search(&mut self) -> bool {
-        if self.hits.is_empty() {
+        let count = self.hits.len();
+        let locked = self.prompt.as_mut().is_some_and(|p| p.lock(count));
+        if !locked {
             self.leave_search();
             return false;
         }
-        self.search_nav = true;
         true
     }
 
@@ -183,7 +205,7 @@ impl ReaderTab {
     }
 
     fn hit_span(&self, index: usize, width: u16) -> usize {
-        let query = self.cmd.trim_start_matches('/');
+        let query = self.search_query();
         self.hits
             .get(index)
             .map(|hit| {
@@ -271,7 +293,9 @@ impl ReaderTab {
         }
         if let Some(needle) = query.strip_prefix('/') {
             self.enter_search();
-            self.cmd = needle.to_string();
+            if let Some(prompt) = &mut self.prompt {
+                prompt.query = needle.to_string();
+            }
             self.render_results();
             return;
         }

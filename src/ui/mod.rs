@@ -29,6 +29,7 @@ use crate::session::{WorkspaceStore, WorkspaceTab};
 
 use self::keymap::{map_crossterm, pretty_binding, Action, Context, Keymap};
 use self::menu::{para_char, MenuState};
+use self::prompt::Phase;
 use self::reader::ReaderTab;
 use self::theme::Theme;
 
@@ -359,7 +360,7 @@ impl App {
                     resolve_law(query)
                 }
             }
-            Mode::Search if !self.menu.search_nav => None,
+            Mode::Search if !self.menu.search_nav() => None,
             _ => self.menu.highlighted(),
         }?;
         Some(law.shortcut)
@@ -368,7 +369,7 @@ impl App {
     fn handle_menu(&mut self, key: Key) {
         let action = self.keymap.resolve(key, Context::Menu);
         let mode = self.menu.mode;
-        let search_nav = self.menu.search_nav;
+        let search_nav = self.menu.search_nav();
         match mode {
             Mode::Insert => match action {
                 Some(Action::EnterNormal) => self.menu.reset_list(),
@@ -390,18 +391,18 @@ impl App {
                 Some(Action::Confirm) => {
                     self.menu.lock_search();
                 }
-                Some(Action::EnterSearch) => self.menu.search_nav = false,
+                Some(Action::EnterSearch) => self.menu.resume_typing(),
                 _ => {
                     if key == Key::Backspace {
-                        self.menu.backspace();
+                        self.menu.search_backspace();
                     } else if let Some(ch) = printable(key) {
-                        self.menu.type_char(ch);
+                        self.menu.type_search(ch);
                     }
                 }
             },
             Mode::Search => match action {
                 Some(Action::EnterNormal) => self.menu.reset_list(),
-                Some(Action::EnterSearch) => self.menu.search_nav = false,
+                Some(Action::EnterSearch) => self.menu.resume_typing(),
                 Some(Action::MoveDown | Action::MoveRight) => self.menu.move_highlight(1),
                 Some(Action::MoveUp | Action::MoveLeft) => self.menu.move_highlight(-1),
                 Some(Action::Confirm) => {
@@ -436,12 +437,12 @@ impl App {
             return;
         };
         match tab.mode {
-            Mode::Search if !tab.search_nav => match action {
+            Mode::Search if !tab.search_nav() => match action {
                 Some(Action::EnterNormal) => tab.enter_normal(),
                 Some(Action::Confirm) => {
                     tab.lock_search();
                 }
-                Some(Action::EnterSearch) => tab.search_nav = false,
+                Some(Action::EnterSearch) => tab.resume_typing(),
                 _ => {
                     if key == Key::Backspace {
                         tab.search_backspace();
@@ -452,7 +453,7 @@ impl App {
             },
             Mode::Search => match action {
                 Some(Action::EnterNormal) => tab.enter_normal(),
-                Some(Action::EnterSearch) => tab.search_nav = false,
+                Some(Action::EnterSearch) => tab.resume_typing(),
                 Some(Action::MoveDown) => tab.move_hit(1, card_width, view_height),
                 Some(Action::MoveUp) => tab.move_hit(-1, card_width, view_height),
                 Some(Action::Confirm) => tab.open_highlighted_hit(),
@@ -719,7 +720,7 @@ impl App {
             height: inner.height,
         };
         let theme = self.theme();
-        let query = self.menu.cmd.trim_start_matches('/');
+        let query = self.menu.search_query();
         let items: Vec<ListItem> = self
             .menu
             .filtered
@@ -763,7 +764,7 @@ impl App {
         }
         let theme = self.theme();
         let card_width = inner.width.saturating_sub(1);
-        let query = tab.cmd.trim_start_matches('/');
+        let query = tab.search_query();
         let mut y = inner.y;
         for (index, hit) in tab.hits.iter().enumerate().skip(tab.search_origin) {
             if y >= inner.bottom() {
@@ -1197,12 +1198,19 @@ impl App {
 
     pub fn cmd(&self) -> &str {
         if self.on_menu() {
-            &self.menu.cmd
+            self.menu
+                .prompt
+                .as_ref()
+                .map(|p| p.query.as_str())
+                .unwrap_or(&self.menu.cmd)
         } else if let Some(tab) = self.current_tab() {
             if tab.mode == Mode::Para {
                 &tab.para
             } else {
-                &tab.cmd
+                tab.prompt
+                    .as_ref()
+                    .map(|p| p.query.as_str())
+                    .unwrap_or("")
             }
         } else {
             ""
@@ -1240,11 +1248,14 @@ impl App {
 
     pub fn search_nav(&self) -> bool {
         if self.on_menu() {
-            self.menu.search_nav
+            self.menu
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.phase == Phase::Navigating)
         } else {
             self.current_tab()
-                .map(|tab| tab.search_nav)
-                .unwrap_or(false)
+                .and_then(|tab| tab.prompt.as_ref())
+                .is_some_and(|p| p.phase == Phase::Navigating)
         }
     }
 

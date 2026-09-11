@@ -1,10 +1,11 @@
 use crate::catalog::{filter_laws, resolve_law, LawRef, LAWS};
 
+use super::prompt::{Phase, SearchPrompt};
 use super::Mode;
 
 pub struct MenuState {
     pub mode: Mode,
-    pub search_nav: bool,
+    pub prompt: Option<SearchPrompt>,
     pub cmd: String,
     pub highlight: usize,
     pub filtered: Vec<&'static LawRef>,
@@ -14,16 +15,29 @@ impl MenuState {
     pub fn new() -> Self {
         Self {
             mode: Mode::Normal,
-            search_nav: false,
+            prompt: None,
             cmd: String::new(),
             highlight: 0,
             filtered: LAWS.iter().collect(),
         }
     }
 
+    pub fn search_nav(&self) -> bool {
+        self.prompt
+            .as_ref()
+            .is_some_and(|p| p.phase == Phase::Navigating)
+    }
+
+    pub fn search_query(&self) -> &str {
+        self.prompt
+            .as_ref()
+            .map(SearchPrompt::filter_query)
+            .unwrap_or("")
+    }
+
     pub fn reset_list(&mut self) {
         self.cmd.clear();
-        self.search_nav = false;
+        self.prompt = None;
         self.filtered = LAWS.iter().collect();
         self.highlight = 0;
         self.mode = Mode::Normal;
@@ -36,18 +50,29 @@ impl MenuState {
 
     pub fn enter_search(&mut self) {
         if self.mode == Mode::Search {
-            self.search_nav = false;
+            self.resume_typing();
             return;
         }
-        self.search_nav = false;
-        self.cmd.clear();
-        self.apply_filter("");
+        self.prompt = Some(SearchPrompt::enter());
+        self.apply_filter();
         self.mode = Mode::Search;
     }
 
-    pub fn apply_filter(&mut self, query: &str) {
+    pub fn resume_typing(&mut self) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.resume_typing();
+        }
+    }
+
+    pub fn apply_filter(&mut self) {
+        let query = self
+            .prompt
+            .as_ref()
+            .map(SearchPrompt::filter_query)
+            .unwrap_or("")
+            .to_string();
         let keep = self.filtered.get(self.highlight).map(|law| law.slug);
-        self.filtered = filter_laws(query);
+        self.filtered = filter_laws(&query);
         self.highlight = keep
             .and_then(|slug| self.filtered.iter().position(|law| law.slug == slug))
             .unwrap_or(0);
@@ -72,26 +97,33 @@ impl MenuState {
 
     pub fn type_char(&mut self, ch: char) {
         self.cmd.push(ch);
-        if self.mode == Mode::Search && !self.search_nav {
-            let query = self.cmd.clone();
-            self.apply_filter(&query);
-        }
     }
 
     pub fn backspace(&mut self) {
         self.cmd.pop();
-        if self.mode == Mode::Search && !self.search_nav {
-            let query = self.cmd.clone();
-            self.apply_filter(&query);
+    }
+
+    pub fn type_search(&mut self, ch: char) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.type_char(ch);
         }
+        self.apply_filter();
+    }
+
+    pub fn search_backspace(&mut self) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.backspace();
+        }
+        self.apply_filter();
     }
 
     pub fn lock_search(&mut self) -> bool {
-        if self.filtered.is_empty() {
+        let count = self.filtered.len();
+        let locked = self.prompt.as_mut().is_some_and(|p| p.lock(count));
+        if !locked {
             self.reset_list();
             return false;
         }
-        self.search_nav = true;
         true
     }
 
