@@ -1,7 +1,3 @@
-use std::sync::LazyLock;
-
-use regex::Regex;
-
 use crate::document::format_citation;
 use crate::models::{CitationKey, Law, Norm, SearchHit};
 
@@ -9,18 +5,8 @@ const MIN_FUZZY_SCORE: i64 = 70;
 const PREVIEW_WIDTH: usize = 80;
 const HIGHLIGHT_STYLE: &str = "search-hit";
 
-static QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\A(?:§§?|art(?:ikel)?)?\s*(\d+)\s*([a-zäöü])?\s*\z").unwrap()
-});
-
 pub fn parse_citation_query(query: &str) -> Option<CitationKey> {
-    let caps = QUERY_RE.captures(query.trim())?;
-    let number = caps[1].parse().ok()?;
-    let suffix = caps
-        .get(2)
-        .map(|m| m.as_str().to_lowercase())
-        .unwrap_or_default();
-    Some(CitationKey::with_suffix(number, suffix))
+    CitationKey::parse_query(query)
 }
 
 pub fn lookup_norm<'a>(law: &'a Law, query: &str) -> Option<&'a Norm> {

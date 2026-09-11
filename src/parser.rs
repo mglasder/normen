@@ -1,14 +1,7 @@
-use std::sync::LazyLock;
-
-use regex::Regex;
 use roxmltree::{Document, Node};
 
+use crate::citation::parse_range;
 use crate::models::{CitationKey, Law, Norm};
-
-static RANGE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)§§\s*(\d+)\s*bis\s*(\d+)").unwrap());
-static SINGLE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:§§?|art(?:ikel)?)\s*(\d+)\s*([a-zäöü])?").unwrap());
 
 pub fn parse_law_xml(data: &[u8]) -> Law {
     try_parse_law_xml(data).expect("law xml should parse")
@@ -97,20 +90,10 @@ fn section_heading(meta: Node<'_, '_>) -> Option<(String, String)> {
 }
 
 fn citation_keys(enbez: &str) -> Vec<CitationKey> {
-    if let Some(caps) = RANGE_RE.captures(enbez) {
-        let start: i32 = caps[1].parse().unwrap_or(0);
-        let end: i32 = caps[2].parse().unwrap_or(0);
+    if let Some((start, end)) = parse_range(enbez) {
         return (start..=end).map(CitationKey::new).collect();
     }
-    if let Some(caps) = SINGLE_RE.captures(enbez) {
-        let number: i32 = caps[1].parse().unwrap_or(0);
-        let suffix = caps
-            .get(2)
-            .map(|m| m.as_str().to_lowercase())
-            .unwrap_or_default();
-        return vec![CitationKey::with_suffix(number, suffix)];
-    }
-    Vec::new()
+    CitationKey::parse_first(enbez).into_iter().collect()
 }
 
 fn norm_text(textdaten: Option<Node<'_, '_>>) -> String {

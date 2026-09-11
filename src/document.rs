@@ -2,13 +2,11 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::citation::normalize_art;
 use crate::models::{CitationKey, Law, Norm};
 
 static LIST_ITEM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(\d+[a-zäöü]?\.|[a-zäöü]\))\s+(.*)$").unwrap());
-static CITATION_LABEL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(?:§§?|art(?:ikel)?)\s*(\d+)\s*([a-zäöü])?").unwrap());
-static ART_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bArt(?:ikel)?\.?\s+").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BodyBlock {
@@ -36,7 +34,7 @@ impl BodyBlock {
 }
 
 pub fn format_citation(citation: &str, abbreviation: &str) -> String {
-    let text = ART_RE.replace_all(citation, "Art. ").into_owned();
+    let text = normalize_art(citation);
     if !abbreviation.is_empty()
         && !text.to_lowercase().contains(&abbreviation.to_lowercase())
         && (text.contains('§') || text.starts_with("Art."))
@@ -87,12 +85,8 @@ pub fn norm_number_label(norm: &Norm) -> String {
     if let Some(key) = norm.keys.first() {
         return key_label(key);
     }
-    if let Some(caps) = CITATION_LABEL.captures(&norm.citation) {
-        let suffix = caps
-            .get(2)
-            .map(|m| m.as_str().to_lowercase())
-            .unwrap_or_default();
-        return format!("{}{suffix}", &caps[1]);
+    if let Some(key) = CitationKey::parse_first(&norm.citation) {
+        return key_label(&key);
     }
     norm.citation.clone()
 }
