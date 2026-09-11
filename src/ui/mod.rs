@@ -462,7 +462,7 @@ impl App {
             Mode::Para => match action {
                 Some(Action::EnterNormal) => tab.enter_normal(),
                 Some(Action::Confirm) => tab.confirm_para(),
-                None => {
+                _ => {
                     if key == Key::Backspace {
                         tab.para.pop();
                     } else if let Key::Char(c) = key {
@@ -473,7 +473,6 @@ impl App {
                         }
                     }
                 }
-                Some(_) => {}
             },
             Mode::Normal | Mode::Insert => match action {
                 Some(Action::EnterPara) => tab.enter_para(""),
@@ -1988,6 +1987,17 @@ mod tests {
         assert_eq!(app.current_citation(), Some("§ 31a"));
         assert_eq!(app.mode_label(), "NORMAL");
         assert_eq!(app.pos_label(), "31a:433");
+    }
+
+    #[test]
+    fn reader_para_keeps_bound_letter_as_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), Some("bgb"));
+        press(&mut app, &[Key::Char('3'), Key::Char('1')]);
+        assert_eq!(app.mode_label(), "PARA");
+        assert_eq!(app.cmd(), "31");
+        app.handle_key(Key::Char('j'));
+        assert_eq!(app.cmd(), "31j");
     }
 
     #[test]
