@@ -3,7 +3,6 @@ use crate::models::{CitationKey, Law, Norm, SearchHit};
 
 const MIN_FUZZY_SCORE: i64 = 70;
 const PREVIEW_WIDTH: usize = 80;
-const HIGHLIGHT_STYLE: &str = "search-hit";
 
 pub fn parse_citation_query(query: &str) -> Option<CitationKey> {
     CitationKey::parse_query(query)
@@ -217,11 +216,14 @@ fn closest_word_range(chars: &[char], query: &str) -> Option<(usize, usize)> {
     best.map(|(_, start, end)| (start, end))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanMark { Bold, Hit }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSpan {
     pub start: usize,
     pub end: usize,
-    pub style: String,
+    pub mark: SpanMark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,14 +240,14 @@ impl StyledText {
         }
     }
 
-    fn append(&mut self, text: &str, style: Option<&str>) {
+    fn append(&mut self, text: &str, mark: Option<SpanMark>) {
         let start = self.plain.len();
         self.plain.push_str(text);
-        if let Some(style) = style {
+        if let Some(mark) = mark {
             self.spans.push(TextSpan {
                 start,
                 end: self.plain.len(),
-                style: style.to_string(),
+                mark,
             });
         }
     }
@@ -257,7 +259,7 @@ impl StyledText {
             self.spans.push(TextSpan {
                 start: span.start + offset,
                 end: span.end + offset,
-                style: span.style,
+                mark: span.mark,
             });
         }
     }
@@ -266,7 +268,7 @@ impl StyledText {
 pub fn format_search_hit(hit: &SearchHit, query: &str, abbreviation: &str) -> StyledText {
     let mut prompt = StyledText::new();
     let citation = format_citation(&hit.norm.citation, abbreviation);
-    append_marked(&mut prompt, &citation, query, Some("bold"));
+    append_marked(&mut prompt, &citation, query, Some(SpanMark::Bold));
     if !hit.norm.title.is_empty() {
         prompt.append("  ", None);
         prompt.append_styled(highlight_text(&hit.norm.title, query));
@@ -279,14 +281,14 @@ pub fn format_search_hit(hit: &SearchHit, query: &str, abbreviation: &str) -> St
     prompt
 }
 
-fn append_marked(prompt: &mut StyledText, text: &str, query: &str, fallback: Option<&str>) {
+fn append_marked(prompt: &mut StyledText, text: &str, query: &str, fallback: Option<SpanMark>) {
     let marked = highlight_text(text, query);
     let mut pos = 0;
     for span in &marked.spans {
         if span.start > pos {
             prompt.append(&marked.plain[pos..span.start], fallback);
         }
-        prompt.append(&marked.plain[span.start..span.end], Some(&span.style));
+        prompt.append(&marked.plain[span.start..span.end], Some(span.mark));
         pos = span.end;
     }
     if pos < marked.plain.len() {
@@ -313,7 +315,7 @@ pub fn highlight_text(text: &str, query: &str) -> StyledText {
         if start > pos {
             result.append(&chars_to_string(&chars[pos..start]), None);
         }
-        result.append(&chars_to_string(&chars[start..end]), Some(HIGHLIGHT_STYLE));
+        result.append(&chars_to_string(&chars[start..end]), Some(SpanMark::Hit));
         pos = end;
     }
     if pos < chars.len() {
@@ -596,7 +598,7 @@ mod tests {
         assert!(prompt.plain.contains("Kaufvertrag"));
         let citation_end = "§ 433 BGB".len();
         assert!(prompt.spans.iter().any(|span| {
-            span.start == 0 && span.end == citation_end && span.style.contains("bold")
+            span.start == 0 && span.end == citation_end && span.mark == SpanMark::Bold
         }));
         assert!(lines.len() >= 2);
     }
@@ -605,16 +607,13 @@ mod tests {
     fn highlight_text_marks_query() {
         let rendered = highlight_text("Vertragstypische Pflichten beim Kaufvertrag", "Kauf");
         assert!(rendered.plain.contains("Kaufvertrag"));
-        assert!(rendered
-            .spans
-            .iter()
-            .any(|span| span.style.contains("search-hit")));
+        assert!(rendered.spans.iter().any(|span| span.mark == SpanMark::Hit));
     }
 
     fn highlighted_piece(text: &StyledText) -> String {
         text.spans
             .iter()
-            .find(|span| span.style.contains("search-hit"))
+            .find(|span| span.mark == SpanMark::Hit)
             .map(|span| text.plain[span.start..span.end].to_string())
             .unwrap_or_default()
     }
@@ -642,7 +641,7 @@ mod tests {
             prompt
                 .spans
                 .iter()
-                .any(|span| span.style.contains("search-hit")
+                .any(|span| span.mark == SpanMark::Hit
                     && prompt.plain[span.start..span.end].contains("433")),
             "citation number should be highlighted: {prompt:?}"
         );

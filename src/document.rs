@@ -8,9 +8,12 @@ use crate::models::{CitationKey, Law, Norm};
 static LIST_ITEM_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(\d+[a-zäöü]?\.|[a-zäöü]\))\s+(.*)$").unwrap());
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind { Prose, List }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BodyBlock {
-    pub kind: String,
+    pub kind: BlockKind,
     pub text: String,
     pub marker: String,
 }
@@ -18,7 +21,7 @@ pub struct BodyBlock {
 impl BodyBlock {
     fn prose(text: impl Into<String>) -> Self {
         Self {
-            kind: "prose".into(),
+            kind: BlockKind::Prose,
             text: text.into(),
             marker: String::new(),
         }
@@ -26,7 +29,7 @@ impl BodyBlock {
 
     fn list(marker: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
-            kind: "list".into(),
+            kind: BlockKind::List,
             text: text.into(),
             marker: marker.into(),
         }
@@ -306,14 +309,14 @@ mod tests {
             .find(|norm| norm.citation == "Art 74")
             .unwrap();
         let blocks = iter_body_blocks(&art74.text);
-        let items: Vec<_> = blocks.iter().filter(|b| b.kind == "list").collect();
+        let items: Vec<_> = blocks.iter().filter(|b| b.kind == BlockKind::List).collect();
         assert_eq!(items[0].marker, "1.");
         assert!(items[0].text.starts_with("das bürgerliche Recht"));
         assert_eq!(items[1].marker, "2.");
         assert_eq!(items[2].marker, "19a.");
         let prose: Vec<_> = blocks
             .iter()
-            .filter(|b| b.kind == "prose")
+            .filter(|b| b.kind == BlockKind::Prose)
             .map(|b| b.text.as_str())
             .collect();
         assert!(prose.iter().any(|text| text.contains("folgende Gebiete:")));

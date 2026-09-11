@@ -20,9 +20,9 @@ use ratatui::{Frame, Terminal};
 
 use crate::catalog::{resolve_law, LawRef};
 use crate::config::Config;
-use crate::document::{iter_body_blocks, norm_heading};
+use crate::document::{iter_body_blocks, norm_heading, BlockKind};
 use crate::models::Law;
-use crate::search::{format_search_hit, highlight_text};
+use crate::search::{format_search_hit, highlight_text, SpanMark};
 use crate::session::{WorkspaceStore, WorkspaceTab};
 
 use self::menu::{para_char, MenuState};
@@ -1634,7 +1634,7 @@ fn styled_to_line(text: &crate::search::StyledText, theme: &Theme) -> Line<'stat
 fn styled_to_lines(text: &crate::search::StyledText, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     let mut pos = 0usize;
-    let mut events: Vec<(usize, usize, Option<&str>)> = Vec::new();
+    let mut events: Vec<(usize, usize, Option<SpanMark>)> = Vec::new();
     if text.spans.is_empty() {
         events.push((0, text.plain.len(), None));
     } else {
@@ -1642,7 +1642,7 @@ fn styled_to_lines(text: &crate::search::StyledText, theme: &Theme) -> Vec<Line<
             if span.start > pos {
                 events.push((pos, span.start, None));
             }
-            events.push((span.start, span.end, Some(span.style.as_str())));
+            events.push((span.start, span.end, Some(span.mark)));
             pos = span.end;
         }
         if pos < text.plain.len() {
@@ -1679,13 +1679,13 @@ fn styled_to_lines(text: &crate::search::StyledText, theme: &Theme) -> Vec<Line<
         .collect()
 }
 
-fn span_style(style: Option<&str>, theme: &Theme) -> Style {
+fn span_style(style: Option<SpanMark>, theme: &Theme) -> Style {
     match style {
-        Some(style) if style.contains("search-hit") => Style::default()
+        Some(SpanMark::Hit) => Style::default()
             .fg(theme.search_fg)
             .bg(theme.accent)
             .add_modifier(Modifier::BOLD),
-        Some(style) if style.contains("bold") => {
+        Some(SpanMark::Bold) => {
             Style::default().add_modifier(Modifier::BOLD)
         }
         _ => Style::default(),
@@ -1793,7 +1793,7 @@ fn norm_card_lines(
         let mut after_list = false;
         let mut after_absatz = false;
         for block in iter_body_blocks(&norm.text) {
-            if block.kind == "list" {
+            if block.kind == BlockKind::List {
                 let marker = format!("{:<3}", block.marker);
                 let body_width = inner_width.saturating_sub(marker.chars().count() + 1);
                 let wrapped = wrap_text(&block.text, body_width.max(1));
