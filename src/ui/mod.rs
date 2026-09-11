@@ -26,12 +26,10 @@ use crate::models::Law;
 use crate::search::{format_search_hit, highlight_text, SpanMark};
 use crate::session::{WorkspaceStore, WorkspaceTab};
 
-use self::keymap::{map_crossterm, pretty_binding};
+use self::keymap::{map_crossterm, pretty_binding, Action, Context, Keymap};
 use self::menu::{para_char, MenuState};
 use self::reader::ReaderTab;
 use self::theme::Theme;
-
-pub(crate) use self::keymap::key_matches;
 
 pub const WINDOW_RADIUS: usize = 16;
 
@@ -80,6 +78,7 @@ pub enum Mode {
 
 pub struct App {
     config: Config,
+    keymap: Keymap,
     load: Box<dyn Fn(&LawRef, bool) -> Result<Law, String>>,
     menu: MenuState,
     tabs: Vec<ReaderTab>,
@@ -159,8 +158,10 @@ impl App {
         refresh: bool,
         session_path: PathBuf,
     ) -> Self {
+        let keymap = Keymap::from_config(&config);
         let mut app = Self {
             config,
+            keymap,
             load,
             menu: MenuState::new(),
             tabs: Vec::new(),
@@ -261,10 +262,15 @@ impl App {
             self.kill_pending = true;
             return;
         }
+        let ctx = if self.on_menu() {
+            Context::Menu
+        } else {
+            Context::Reader
+        };
         if self.kill_pending {
             if is_yes(key) {
                 self.kill_quit();
-            } else if self.matches(key, "enter_normal") || key == Key::Esc {
+            } else if self.keymap.resolve(key, ctx) == Some(Action::EnterNormal) {
                 self.kill_pending = false;
             }
             return;
@@ -272,13 +278,13 @@ impl App {
         if self.quit_pending {
             if is_yes(key) {
                 self.persist_quit();
-            } else if self.matches(key, "enter_normal") || key == Key::Esc {
+            } else if self.keymap.resolve(key, ctx) == Some(Action::EnterNormal) {
                 self.quit_pending = false;
             }
             return;
         }
         if self.help {
-            if self.matches(key, "quit") || matches!(key, Key::Ctrl('q')) {
+            if self.keymap.resolve(key, ctx) == Some(Action::Quit) {
                 self.help = false;
                 self.quit_pending = true;
                 return;
@@ -286,13 +292,14 @@ impl App {
             self.help = false;
             return;
         }
-        if self.matches(key, "help") || key == Key::Char('?') {
-            if self.screen_mode() == Mode::Normal && !self.prefix {
-                self.help = true;
-                return;
-            }
+        if self.keymap.resolve(key, ctx) == Some(Action::Help)
+            && self.screen_mode() == Mode::Normal
+            && !self.prefix
+        {
+            self.help = true;
+            return;
         }
-        if self.matches(key, "quit") || matches!(key, Key::Ctrl('q')) {
+        if self.keymap.resolve(key, ctx) == Some(Action::Quit) {
             if self.prefix {
                 self.prefix = false;
             }
@@ -300,14 +307,14 @@ impl App {
             return;
         }
         if self.prefix {
-            if self.matches(key, "tab_prefix") {
+            if self.keymap.resolve(key, ctx) == Some(Action::TabPrefix) {
                 return;
             }
             self.prefix = false;
             self.run_prefix(key);
             return;
         }
-        if self.matches(key, "tab_prefix") {
+        if self.keymap.resolve(key, ctx) == Some(Action::TabPrefix) {
             self.prefix = true;
             return;
         }
@@ -319,25 +326,17 @@ impl App {
     }
 
     fn run_prefix(&mut self, key: Key) {
-        if self.matches(key, "tab_next") {
-            self.next_tab();
-            return;
-        }
-        if self.matches(key, "tab_prev") {
-            self.prev_tab();
-            return;
-        }
-        if self.matches(key, "tab_close") {
-            self.close_tab();
-            return;
-        }
-        if self.matches(key, "tab_menu") || matches!(key, Key::Char('0')) {
-            self.show_menu();
-            return;
-        }
-        if let Key::Char(c) = key {
-            if c.is_ascii_digit() {
-                self.jump_tab(c.to_digit(10).unwrap_or(0) as usize);
+        match self.keymap.resolve(key, Context::Prefix) {
+            Some(Action::TabNext) => self.next_tab(),
+            Some(Action::TabPrev) => self.prev_tab(),
+            Some(Action::TabClose) => self.close_tab(),
+            Some(Action::TabMenu) => self.show_menu(),
+            _ => {
+                if let Key::Char(c) = key {
+                    if c.is_ascii_digit() {
+                        self.jump_tab(c.to_digit(10).unwrap_or(0) as usize);
+                    }
+                }
             }
         }
     }
@@ -346,7 +345,7 @@ impl App {
         if self.quit_pending || self.kill_pending || self.prefix || !self.on_menu() {
             return None;
         }
-        let confirm = key == Key::Enter || self.matches(key, "confirm");
+        let confirm = self.keymap.resolve(key, Context::Menu) == Some(Action::Confirm);
         if !confirm {
             return None;
         }
@@ -366,135 +365,69 @@ impl App {
     }
 
     fn handle_menu(&mut self, key: Key) {
+        let action = self.keymap.resolve(key, Context::Menu);
         let mode = self.menu.mode;
         let search_nav = self.menu.search_nav;
         match mode {
-            Mode::Insert => {
-                if self.matches(key, "enter_normal") || key == Key::Esc {
-                    self.menu.reset_list();
-                    return;
-                }
-                if key == Key::Enter || self.matches(key, "confirm") {
+            Mode::Insert => match action {
+                Some(Action::EnterNormal) => self.menu.reset_list(),
+                Some(Action::Confirm) => {
                     if let Some(law_ref) = self.menu.resolve_insert().copied() {
                         self.open_tab(law_ref, None);
                     }
-                    return;
                 }
-                if key == Key::Backspace {
-                    self.menu.backspace();
-                    return;
+                _ => {
+                    if key == Key::Backspace {
+                        self.menu.backspace();
+                    } else if let Some(ch) = printable(key) {
+                        self.menu.type_char(ch);
+                    }
                 }
-                if let Some(ch) = printable(key) {
-                    self.menu.type_char(ch);
-                }
-            }
-            Mode::Search if !search_nav => {
-                if self.matches(key, "enter_normal") || key == Key::Esc {
-                    self.menu.reset_list();
-                    return;
-                }
-                if key == Key::Enter || self.matches(key, "confirm") {
+            },
+            Mode::Search if !search_nav => match action {
+                Some(Action::EnterNormal) => self.menu.reset_list(),
+                Some(Action::Confirm) => {
                     self.menu.lock_search();
-                    return;
                 }
-                if self.matches(key, "enter_search") || key == Key::Slash {
-                    self.menu.search_nav = false;
-                    return;
+                Some(Action::EnterSearch) => self.menu.search_nav = false,
+                _ => {
+                    if key == Key::Backspace {
+                        self.menu.backspace();
+                    } else if let Some(ch) = printable(key) {
+                        self.menu.type_char(ch);
+                    }
                 }
-                if key == Key::Backspace {
-                    self.menu.backspace();
-                    return;
-                }
-                if let Some(ch) = printable(key) {
-                    self.menu.type_char(ch);
-                }
-            }
-            Mode::Search => {
-                if self.matches(key, "enter_normal") || key == Key::Esc {
-                    self.menu.reset_list();
-                    return;
-                }
-                if self.matches(key, "enter_search") || key == Key::Slash {
-                    self.menu.search_nav = false;
-                    return;
-                }
-                if self.matches(key, "move_down")
-                    || key == Key::Char('j')
-                    || key == Key::Down
-                    || key == Key::Char('l')
-                    || key == Key::Right
-                {
-                    self.menu.move_highlight(1);
-                    return;
-                }
-                if self.matches(key, "move_up")
-                    || key == Key::Char('k')
-                    || key == Key::Up
-                    || key == Key::Char('h')
-                    || key == Key::Left
-                {
-                    self.menu.move_highlight(-1);
-                    return;
-                }
-                if key == Key::Enter || self.matches(key, "confirm") {
+            },
+            Mode::Search => match action {
+                Some(Action::EnterNormal) => self.menu.reset_list(),
+                Some(Action::EnterSearch) => self.menu.search_nav = false,
+                Some(Action::MoveDown | Action::MoveRight) => self.menu.move_highlight(1),
+                Some(Action::MoveUp | Action::MoveLeft) => self.menu.move_highlight(-1),
+                Some(Action::Confirm) => {
                     if let Some(law_ref) = self.menu.highlighted().copied() {
                         self.menu.reset_list();
                         self.open_tab(law_ref, None);
                     }
                 }
-            }
-            Mode::Normal | Mode::Para => {
-                if self.matches(key, "enter_para") || key == Key::Char('i') {
-                    self.menu.enter_insert();
-                    return;
-                }
-                if self.matches(key, "enter_search") || key == Key::Slash {
-                    self.menu.enter_search();
-                    return;
-                }
-                if self.matches(key, "move_down")
-                    || key == Key::Char('j')
-                    || key == Key::Down
-                    || key == Key::Char('l')
-                    || key == Key::Right
-                {
-                    self.menu.move_highlight(1);
-                    return;
-                }
-                if self.matches(key, "move_up")
-                    || key == Key::Char('k')
-                    || key == Key::Up
-                    || key == Key::Char('h')
-                    || key == Key::Left
-                {
-                    self.menu.move_highlight(-1);
-                    return;
-                }
-                if key == Key::Enter || self.matches(key, "confirm") {
+                _ => {}
+            },
+            Mode::Normal | Mode::Para => match action {
+                Some(Action::EnterPara) => self.menu.enter_insert(),
+                Some(Action::EnterSearch) => self.menu.enter_search(),
+                Some(Action::MoveDown | Action::MoveRight) => self.menu.move_highlight(1),
+                Some(Action::MoveUp | Action::MoveLeft) => self.menu.move_highlight(-1),
+                Some(Action::Confirm) => {
                     if let Some(law_ref) = self.menu.highlighted().copied() {
                         self.open_tab(law_ref, None);
                     }
                 }
-            }
+                _ => {}
+            },
         }
     }
 
     fn handle_reader(&mut self, key: Key) {
-        let enter_normal = self.matches(key, "enter_normal") || key == Key::Esc;
-        let confirm = key == Key::Enter || self.matches(key, "confirm");
-        let enter_search = self.matches(key, "enter_search") || key == Key::Slash;
-        let enter_para = self.matches(key, "enter_para") || key == Key::Char('i');
-        let paragraph_next = self.matches(key, "paragraph_next");
-        let paragraph_prev = self.matches(key, "paragraph_prev");
-        let move_right =
-            self.matches(key, "move_right") || key == Key::Char('l') || key == Key::Right;
-        let move_left = self.matches(key, "move_left") || key == Key::Char('h') || key == Key::Left;
-        let move_down = self.matches(key, "move_down") || key == Key::Char('j') || key == Key::Down;
-        let move_up = self.matches(key, "move_up") || key == Key::Char('k') || key == Key::Up;
-        let goto_top = self.matches(key, "goto_top") || key == Key::Char('g');
-        let goto_bottom = self.matches(key, "goto_bottom") || key == Key::Char('G');
-        let page_down = self.matches(key, "page_down") || matches!(key, Key::Ctrl('d'));
-        let page_up = self.matches(key, "page_up") || matches!(key, Key::Ctrl('u'));
+        let action = self.keymap.resolve(key, Context::Reader);
         let card_width = self.reader_card_width();
         let view_height = self.reader_view_height();
         let page = view_height.max(1) as isize;
@@ -502,135 +435,67 @@ impl App {
             return;
         };
         match tab.mode {
-            Mode::Search if !tab.search_nav => {
-                if enter_normal {
-                    tab.enter_normal();
-                    return;
-                }
-                if confirm {
+            Mode::Search if !tab.search_nav => match action {
+                Some(Action::EnterNormal) => tab.enter_normal(),
+                Some(Action::Confirm) => {
                     tab.lock_search();
-                    return;
                 }
-                if enter_search {
-                    tab.search_nav = false;
-                    return;
-                }
-                if key == Key::Backspace {
-                    tab.search_backspace();
-                    return;
-                }
-                if let Some(ch) = printable(key) {
-                    tab.type_search(ch);
-                }
-            }
-            Mode::Search => {
-                if enter_normal {
-                    tab.enter_normal();
-                    return;
-                }
-                if enter_search {
-                    tab.search_nav = false;
-                    return;
-                }
-                if move_down {
-                    tab.move_hit(1, card_width, view_height);
-                    return;
-                }
-                if move_up {
-                    tab.move_hit(-1, card_width, view_height);
-                    return;
-                }
-                if confirm {
-                    tab.open_highlighted_hit();
-                }
-            }
-            Mode::Para => {
-                if enter_normal {
-                    tab.enter_normal();
-                    return;
-                }
-                if confirm {
-                    tab.confirm_para();
-                    return;
-                }
-                if key == Key::Backspace {
-                    tab.para.pop();
-                    return;
-                }
-                if let Key::Char(c) = key {
-                    if c.is_ascii_digit() {
-                        tab.type_digit(c);
-                    } else if para_char(c) {
-                        tab.type_para_char(c);
+                Some(Action::EnterSearch) => tab.search_nav = false,
+                _ => {
+                    if key == Key::Backspace {
+                        tab.search_backspace();
+                    } else if let Some(ch) = printable(key) {
+                        tab.type_search(ch);
                     }
                 }
-            }
-            Mode::Normal | Mode::Insert => {
-                if let Key::Char(c) = key {
-                    if c.is_ascii_digit() {
-                        tab.type_digit(c);
-                        return;
+            },
+            Mode::Search => match action {
+                Some(Action::EnterNormal) => tab.enter_normal(),
+                Some(Action::EnterSearch) => tab.search_nav = false,
+                Some(Action::MoveDown) => tab.move_hit(1, card_width, view_height),
+                Some(Action::MoveUp) => tab.move_hit(-1, card_width, view_height),
+                Some(Action::Confirm) => tab.open_highlighted_hit(),
+                _ => {}
+            },
+            Mode::Para => match action {
+                Some(Action::EnterNormal) => tab.enter_normal(),
+                Some(Action::Confirm) => tab.confirm_para(),
+                None => {
+                    if key == Key::Backspace {
+                        tab.para.pop();
+                    } else if let Key::Char(c) = key {
+                        if c.is_ascii_digit() {
+                            tab.type_digit(c);
+                        } else if para_char(c) {
+                            tab.type_para_char(c);
+                        }
                     }
                 }
-                if enter_para {
-                    tab.enter_para("");
-                    return;
+                Some(_) => {}
+            },
+            Mode::Normal | Mode::Insert => match action {
+                Some(Action::EnterPara) => tab.enter_para(""),
+                Some(Action::EnterSearch) => tab.enter_search(),
+                Some(Action::ParagraphNext) => tab.step_norm(1, card_width, view_height),
+                Some(Action::ParagraphPrev) => tab.step_norm(-1, card_width, view_height),
+                Some(Action::MoveDown) => tab.scroll_by(1, card_width, view_height),
+                Some(Action::MoveUp) => tab.scroll_by(-1, card_width, view_height),
+                Some(Action::PageDown) => tab.scroll_by(page, card_width, view_height),
+                Some(Action::PageUp) => tab.scroll_by(-page, card_width, view_height),
+                Some(Action::MoveRight) => tab.step_norm(1, card_width, view_height),
+                Some(Action::MoveLeft) => tab.step_norm(-1, card_width, view_height),
+                Some(Action::GotoTop) => tab.goto_top(),
+                Some(Action::GotoBottom) => tab.goto_bottom(),
+                None => {
+                    if let Key::Char(c) = key {
+                        if c.is_ascii_digit() {
+                            tab.type_digit(c);
+                        }
+                    }
                 }
-                if enter_search {
-                    tab.enter_search();
-                    return;
-                }
-                if paragraph_next {
-                    tab.step_norm(1, card_width, view_height);
-                    return;
-                }
-                if paragraph_prev {
-                    tab.step_norm(-1, card_width, view_height);
-                    return;
-                }
-                if move_down {
-                    tab.scroll_by(1, card_width, view_height);
-                    return;
-                }
-                if move_up {
-                    tab.scroll_by(-1, card_width, view_height);
-                    return;
-                }
-                if page_down {
-                    tab.scroll_by(page, card_width, view_height);
-                    return;
-                }
-                if page_up {
-                    tab.scroll_by(-page, card_width, view_height);
-                    return;
-                }
-                if move_right {
-                    tab.step_norm(1, card_width, view_height);
-                    return;
-                }
-                if move_left {
-                    tab.step_norm(-1, card_width, view_height);
-                    return;
-                }
-                if goto_top {
-                    tab.goto_top();
-                    return;
-                }
-                if goto_bottom {
-                    tab.goto_bottom();
-                }
-            }
+                Some(_) => {}
+            },
         }
-    }
-
-    fn matches(&self, key: Key, name: &str) -> bool {
-        self.config_matches(key, name)
-    }
-
-    fn config_matches(&self, key: Key, name: &str) -> bool {
-        let keys = self.config.keymap();
-        let binding = keys.get(name).map(String::as_str).unwrap_or("");
-        key_matches(key, binding)
     }
 
     fn open_tab(&mut self, law_ref: LawRef, initial: Option<&str>) {
@@ -1200,8 +1065,7 @@ impl App {
 
     fn help_lines(&self) -> Vec<Line<'static>> {
         let theme = self.theme();
-        let keys = self.config.keymap();
-        let key = |name: &str| pretty_binding(keys.get(name).map(String::as_str).unwrap_or(""));
+        let key = |name: &str| pretty_binding(self.keymap.binding(name));
         let row = |left: String, right: &str| {
             Line::from(vec![
                 Span::styled(format!("  {left:<18}"), Style::default().fg(theme.primary)),
@@ -3275,6 +3139,25 @@ mod tests {
         assert_eq!(app.current_citation(), first.as_deref());
         app.handle_key(Key::Char('K'));
         assert_eq!(app.current_citation(), first.as_deref());
+    }
+
+    #[test]
+    fn remapped_move_down_does_not_keep_j() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("normen.conf"), "[keys]\nmove_down = d\n").unwrap();
+        let mut app = sample_app(dir.path(), Some("bgb"), None);
+        let start = app.current_index();
+        for _ in 0..80 {
+            app.handle_key(Key::Char('j'));
+            assert_eq!(app.current_index(), start, "j must not scroll after remap");
+        }
+        for _ in 0..80 {
+            app.handle_key(Key::Char('d'));
+            if app.current_index() > start {
+                return;
+            }
+        }
+        panic!("d should scroll lines");
     }
 
     #[test]
