@@ -4,7 +4,7 @@ use crate::models::{Law, SearchHit};
 use crate::search::{lookup_norm, parse_citation_query, search_norms};
 
 use super::prompt::{Phase, SearchPrompt};
-use super::{window_range, Mode, WINDOW_RADIUS};
+use super::Mode;
 
 pub struct ReaderTab {
     pub law_ref: LawRef,
@@ -59,11 +59,6 @@ impl ReaderTab {
             return String::new();
         };
         law_pos_label(&self.law, current)
-    }
-
-    pub fn mounted_len(&self) -> usize {
-        let (start, end) = window_range(self.current, self.law.norms.len(), WINDOW_RADIUS);
-        end.saturating_sub(start)
     }
 
     pub fn apply_initial(&mut self, query: Option<&str>) {

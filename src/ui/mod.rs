@@ -1270,14 +1270,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub fn hit_highlight(&self) -> usize {
-        self.current_tab().map(|tab| tab.hit_highlight).unwrap_or(0)
-    }
-
-    pub fn search_origin(&self) -> usize {
-        self.current_tab().map(|tab| tab.search_origin).unwrap_or(0)
-    }
-
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }
@@ -1322,10 +1314,6 @@ impl App {
 
     fn theme(&self) -> Theme {
         Theme::from_config(&self.config)
-    }
-
-    pub fn mounted_len(&self) -> usize {
-        self.current_tab().map(ReaderTab::mounted_len).unwrap_or(0)
     }
 
     pub fn current_index(&self) -> usize {
@@ -2036,7 +2024,6 @@ mod tests {
         let citations = app.hits_citations();
         assert_eq!(citations[0], "§ 113a");
         assert!(citations.iter().any(|c| c == "§ 113"));
-        assert_eq!(citations[app.hit_highlight()], "§ 113a");
         app.handle_key(Key::Enter);
         app.handle_key(Key::Enter);
         assert_eq!(app.current_citation(), Some("§ 113a"));
@@ -2275,13 +2262,10 @@ mod tests {
         let citations = app.hits_citations();
         assert!(citations.iter().any(|c| c == "§ 433"));
         let idx = citations.iter().position(|c| c == "§ 433").unwrap();
-        for _ in 0..idx {
-            // highlight is auto; we'll set by moving after lock
-        }
         app.handle_key(Key::Enter);
         assert_eq!(app.mode_label(), "SEARCH");
         assert!(app.search_nav());
-        while app.hits_citations().get(app.hit_highlight()) != Some(&"§ 433".to_string()) {
+        for _ in 0..idx {
             app.handle_key(Key::Char('j'));
         }
         app.handle_key(Key::Enter);
@@ -2310,19 +2294,7 @@ mod tests {
         for _ in 0..19 {
             app.handle_key(Key::Char('j'));
         }
-        assert_eq!(app.hits_citations()[app.hit_highlight()], "§ 20");
-        let backend = TestBackend::new(80, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| app.draw(frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let joined: String = (0..12)
-            .map(|y| {
-                (0..80)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let joined = render_joined(&mut app, 80, 12);
         assert!(
             joined.contains("§ 20"),
             "highlighted hit past the first page should stay visible:\n{joined}"
@@ -2331,6 +2303,8 @@ mod tests {
             !joined.contains("§ 1 BGB"),
             "first-page hits should scroll away:\n{joined}"
         );
+        app.handle_key(Key::Enter);
+        assert_eq!(app.current_citation(), Some("§ 20"));
     }
 
     #[test]
@@ -2350,29 +2324,32 @@ mod tests {
                 Key::Enter,
             ],
         );
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let first_page = render_joined(&mut app, 80, 24);
+        assert!(
+            first_page.contains("§ 1 BGB"),
+            "first-page hits should start visible:\n{first_page}"
+        );
         app.handle_key(Key::Char('j'));
-        assert_eq!(app.hit_highlight(), 1);
-        assert_eq!(app.search_origin(), 0);
+        let after_one = render_joined(&mut app, 80, 24);
+        assert!(
+            after_one.contains("§ 1 BGB"),
+            "j should walk the page before scrolling:\n{after_one}"
+        );
         let mut scrolled = false;
         for _ in 0..20 {
             app.handle_key(Key::Char('j'));
-            if app.search_origin() > 0 {
+            let screen = render_joined(&mut app, 80, 24);
+            if !screen.contains("§ 1 BGB") {
                 scrolled = true;
                 break;
             }
         }
         assert!(scrolled, "j should scroll once the highlight leaves the page");
-        let origin = app.search_origin();
-        let highlight = app.hit_highlight();
         app.handle_key(Key::Char('k'));
-        assert_eq!(app.hit_highlight(), highlight - 1);
-        assert_eq!(
-            app.search_origin(),
-            origin,
-            "k should walk the mark up without jumping the page"
+        let after_k = render_joined(&mut app, 80, 24);
+        assert!(
+            !after_k.contains("§ 1 BGB"),
+            "k should walk the mark up without jumping the page:\n{after_k}"
         );
     }
 
@@ -2403,16 +2380,28 @@ mod tests {
         assert_eq!(app.mode_label(), "SEARCH");
         assert!(app.search_nav());
         assert!(app.hits_citations().len() >= 2);
-        assert_eq!(app.hit_highlight(), 0);
-        app.handle_key(Key::Char('j'));
-        assert_eq!(app.hit_highlight(), 1);
-        app.handle_key(Key::Char('k'));
-        assert_eq!(app.hit_highlight(), 0);
         assert_eq!(app.cmd(), "die");
         app.handle_key(Key::Slash);
         assert!(!app.search_nav());
         app.handle_key(Key::Char('x'));
         assert_eq!(app.cmd(), "diex");
+        app.handle_key(Key::Esc);
+        press(
+            &mut app,
+            &[
+                Key::Slash,
+                Key::Char('d'),
+                Key::Char('i'),
+                Key::Char('e'),
+                Key::Enter,
+            ],
+        );
+        let citations = app.hits_citations();
+        assert!(citations.len() >= 2);
+        app.handle_key(Key::Char('j'));
+        app.handle_key(Key::Enter);
+        assert_eq!(app.mode_label(), "NORMAL");
+        assert_eq!(app.current_citation(), Some(citations[1].as_str()));
     }
 
     #[test]
