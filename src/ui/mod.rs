@@ -1,3 +1,4 @@
+pub mod keymap;
 pub mod menu;
 pub mod reader;
 pub mod theme;
@@ -6,7 +7,7 @@ use std::io::{self, stdout, IsTerminal};
 use std::path::PathBuf;
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -25,9 +26,12 @@ use crate::models::Law;
 use crate::search::{format_search_hit, highlight_text, SpanMark};
 use crate::session::{WorkspaceStore, WorkspaceTab};
 
+use self::keymap::{map_crossterm, pretty_binding};
 use self::menu::{para_char, MenuState};
 use self::reader::ReaderTab;
 use self::theme::Theme;
+
+pub(crate) use self::keymap::key_matches;
 
 pub const WINDOW_RADIUS: usize = 16;
 
@@ -1480,112 +1484,6 @@ fn center_pad(text: &str, width: usize) -> String {
     format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
 }
 
-fn pretty_binding(binding: &str) -> String {
-    let parts: Vec<&str> = binding
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect();
-    if let Some(letter) = parts.iter().copied().find(|part| part.chars().count() == 1) {
-        return letter.to_string();
-    }
-    pretty_key_part(parts.first().copied().unwrap_or(""))
-}
-
-fn pretty_key_part(part: &str) -> String {
-    let tokens: Vec<&str> = part.split('+').filter(|token| !token.is_empty()).collect();
-    if tokens.len() == 2 && tokens[0] == "shift" && tokens[1].chars().count() == 1 {
-        return tokens[1].to_uppercase();
-    }
-    let mut out = String::new();
-    for (index, token) in tokens.into_iter().enumerate() {
-        if index > 0 {
-            out.push('-');
-        }
-        let pretty = match token {
-            "ctrl" => "Ctrl",
-            "alt" => "Alt",
-            "shift" => "Shift",
-            "escape" => "Esc",
-            "enter" => "Enter",
-            "slash" => "/",
-            other => other,
-        };
-        out.push_str(pretty);
-    }
-    out
-}
-
-fn key_matches(key: Key, binding: &str) -> bool {
-    binding
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .any(|part| key_eq(key, part))
-}
-
-fn key_eq(key: Key, part: &str) -> bool {
-    match key {
-        Key::Char(c) => {
-            if part.chars().count() == 1 && part.chars().next() == Some(c) {
-                return true;
-            }
-            if c == '/' && (part == "/" || part == "slash") {
-                return true;
-            }
-            if c == 'J' && (part == "J" || part == "shift+j") {
-                return true;
-            }
-            if c == 'K' && (part == "K" || part == "shift+k") {
-                return true;
-            }
-            if c == 'N' && part == "shift+n" {
-                return true;
-            }
-            false
-        }
-        Key::Ctrl(c) => {
-            let want = format!("ctrl+{}", c.to_ascii_lowercase());
-            part.eq_ignore_ascii_case(&want)
-        }
-        Key::Enter => part == "enter",
-        Key::Esc => part == "escape",
-        Key::Backspace => part == "backspace",
-        Key::Slash => part == "/" || part == "slash",
-        Key::Up => part == "up",
-        Key::Down => part == "down",
-        Key::Left => part == "left",
-        Key::Right => part == "right",
-    }
-}
-
-fn map_crossterm(event: event::KeyEvent) -> Option<Key> {
-    if event.kind == KeyEventKind::Release {
-        return None;
-    }
-    let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-    match event.code {
-        KeyCode::Char(c) if ctrl => Some(Key::Ctrl(c.to_ascii_lowercase())),
-        KeyCode::Char('/') => Some(Key::Slash),
-        KeyCode::Char(c) => {
-            let c = if event.modifiers.contains(KeyModifiers::SHIFT) && c.is_ascii_lowercase() {
-                c.to_ascii_uppercase()
-            } else {
-                c
-            };
-            Some(Key::Char(c))
-        }
-        KeyCode::Enter => Some(Key::Enter),
-        KeyCode::Esc => Some(Key::Esc),
-        KeyCode::Backspace => Some(Key::Backspace),
-        KeyCode::Up => Some(Key::Up),
-        KeyCode::Down => Some(Key::Down),
-        KeyCode::Left => Some(Key::Left),
-        KeyCode::Right => Some(Key::Right),
-        _ => None,
-    }
-}
-
 struct RestoreTerminal;
 
 impl Drop for RestoreTerminal {
@@ -2044,16 +1942,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pretty_binding_shows_letters_not_shift_chords() {
-        assert_eq!(pretty_binding("shift+n"), "N");
-        assert_eq!(pretty_binding("K,shift+k"), "K");
-        assert_eq!(pretty_binding("j,down"), "j");
-        assert_eq!(pretty_binding("ctrl+d"), "Ctrl-d");
-        assert_eq!(pretty_binding("escape"), "Esc");
-        assert_eq!(pretty_binding("enter"), "Enter");
-    }
-
     fn many_hits_app(dir: &Path) -> App {
         let mut xml = String::from(
             r#"<?xml version="1.0"?><dokumente><norm><metadaten><jurabk>BGB</jurabk>
@@ -2346,14 +2234,6 @@ mod tests {
             "J should move the mark down without scrolling the first card away: {joined}"
         );
         assert!(joined.contains("§ 1") || joined.contains("Rechtsfähigkeit"));
-    }
-
-    #[test]
-    fn shift_j_keyevent_maps_to_uppercase() {
-        let event = crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::SHIFT);
-        assert_eq!(map_crossterm(event), Some(Key::Char('J')));
-        let plain = crossterm::event::KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(map_crossterm(plain), Some(Key::Char('j')));
     }
 
     #[test]
