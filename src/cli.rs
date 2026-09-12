@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 
 use clap::error::ErrorKind;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::catalog::resolve_law;
 use crate::session::WorkspaceStore;
@@ -30,10 +30,36 @@ pub struct CliFlags {
     pub all: bool,
 }
 
+const ROOT_AFTER_HELP: &str = "\
+Ohne Gesetz: interaktives TUI (Terminal nötig).
+Mit Gesetz oder »laws«: pretty JSON auf stdout, kein TUI, kein »Lade …«.
+
+  normen laws [filter]     Katalog { query, laws: [{ shortcut, slug, title }] }
+  normen BGB               Gliederung { law, norms: [{ citation, title }] }
+  normen BGB 433           Norm { law, citation, title, text }
+  normen BGB /kauf         Suche { law, query, limit, total, hits }
+
+Zweitargument: Zitat (433, 31a, § 433) oder /Suchwort.
+Ohne Schrägstrich ist »Kaufvertrag« kein Zitat (Exit 2).
+Unbekanntes Gesetz oder fehlendes Zitat: Exit 2, Fehler auf stderr.
+Sonst Exit 1. Leere Suche oder leerer Katalogfilter: Exit 0, leeres Array.
+
+--limit gilt nur für /Suche (Standard 10). --all hebt die Kappe auf.
+--limit 0 und --all zusammen mit --limit sind ungültig.";
+
+const LAWS_AFTER_HELP: &str = "\
+  normen laws              alle Einträge
+  normen laws bürger       Filter über Kürzel, Slug, Titel oder Alias
+
+Ausgabe: { query, laws: [{ shortcut, slug, title }] }
+Leerer Filter: Exit 0, laws: []. --limit/--all/--refresh wirken nicht.";
+
 #[derive(Parser)]
 #[command(
     name = "normen",
     about = "Deutsche Gesetze lesen und durchsuchen (gesetze-im-internet.de).",
+    after_help = ROOT_AFTER_HELP,
+    override_usage = "normen [OPTIONS] [LAW] [NORM]\n       normen [OPTIONS] <COMMAND>",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -48,30 +74,99 @@ struct Cli {
     all: bool,
     #[command(subcommand)]
     command: Option<SubCommand>,
-    /// Kürzel, z.B. BGB, GG, StGB, VwGO
+    /// Gesetzeskürzel oder Slug (BGB, gg, bbaug)
     law: Option<String>,
-    /// Normnummer (433, 31a) oder /Volltextsuche
+    /// Normzitat (433, 31a) oder /Volltextsuche
     norm: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum SubCommand {
-    /// Resume a persisted workspace
+    /// Gespeicherten Workspace fortsetzen
+    #[command(
+        about = "Letzten oder angegebenen Workspace im TUI öffnen.",
+        after_help = "Braucht ein Terminal. Ohne ID: zuletzt gespeicherter Workspace."
+    )]
     Attach {
+        /// Workspace-Nummer (normen list)
         id: Option<u32>,
     },
-    /// List persisted workspaces
+    /// Gespeicherte Workspaces auflisten
+    #[command(about = "Gespeicherte Workspaces auflisten (kein JSON-Gesetzestext).")]
     List,
-    /// List or filter available laws
+    /// Katalog der verfügbaren Gesetze (JSON)
+    #[command(
+        about = "Katalog der verfügbaren Gesetze als JSON.",
+        after_help = LAWS_AFTER_HELP
+    )]
     Laws {
+        /// Teilstring für Kürzel, Slug, Titel oder Alias
         filter: Option<String>,
     },
-    /// Delete persisted workspaces
+    /// Gespeicherte Workspaces löschen
+    #[command(
+        about = "Gespeicherte Workspaces löschen.",
+        after_help = "normen rm 3   oder   normen rm --all"
+    )]
     Rm {
+        /// Workspace-Nummer
         id: Option<u32>,
+        /// Alle Workspaces löschen
         #[arg(long)]
         all: bool,
     },
+}
+
+pub fn help_text(subcommand: Option<&str>) -> String {
+    let mut cmd = command_with_hidden_globals(subcommand);
+    match subcommand {
+        None => cmd.render_long_help().to_string(),
+        Some(name) => cmd
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("unknown subcommand {name}"))
+            .render_long_help()
+            .to_string(),
+    }
+}
+
+fn command_with_hidden_globals(subcommand: Option<&str>) -> clap::Command {
+    let mut cmd = Cli::command();
+    for id in hidden_globals(subcommand) {
+        cmd = cmd.mut_arg(id, |arg| arg.hide(true));
+    }
+    cmd
+}
+
+fn hidden_globals(subcommand: Option<&str>) -> &'static [&'static str] {
+    match subcommand {
+        Some("laws" | "list") => &["refresh", "limit", "all"],
+        Some("rm") => &["refresh", "limit", "all"],
+        Some("attach") => &["limit", "all"],
+        _ => &[],
+    }
+}
+
+fn peek_subcommand<T: AsRef<std::ffi::OsStr>>(args: &[T]) -> Option<&'static str> {
+    const NAMES: &[&str] = &["attach", "list", "laws", "rm"];
+    let mut skip_value = false;
+    for arg in args.iter().skip(1) {
+        let Some(text) = arg.as_ref().to_str() else {
+            skip_value = false;
+            continue;
+        };
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if text == "--limit" {
+            skip_value = true;
+            continue;
+        }
+        if let Some(name) = NAMES.iter().copied().find(|name| *name == text) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 pub fn parse_args<I, T>(args: I) -> Result<(Command, CliFlags), String>
@@ -79,8 +174,19 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
+    let argv: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let asking_help = argv.iter().any(|arg| arg == "--help" || arg == "-h");
+    let sub = peek_subcommand(&argv);
+    let cmd = if asking_help {
+        command_with_hidden_globals(sub)
+    } else {
+        Cli::command()
+    };
+    let cli = match cmd.try_get_matches_from(&argv) {
+        Ok(matches) => match Cli::from_arg_matches(&matches) {
+            Ok(cli) => cli,
+            Err(err) => return Err(err.to_string()),
+        },
         Err(err) => {
             if matches!(
                 err.kind(),
@@ -385,6 +491,33 @@ mod tests {
         assert!(listing.contains("MENU*"), "{listing}");
         assert!(listing.contains("BGB"), "{listing}");
         assert!(listing.contains("GG"), "{listing}");
+    }
+
+    #[test]
+    fn root_help_teaches_print_cli() {
+        let help = help_text(None);
+        assert!(help.contains("pretty JSON"), "{help}");
+        assert!(help.contains("normen BGB /kauf"), "{help}");
+        assert!(help.contains("Exit 2"), "{help}");
+        assert!(help.contains("Ohne Schrägstrich"), "{help}");
+        assert!(help.contains("shortcut, slug, title"), "{help}");
+    }
+
+    #[test]
+    fn laws_help_hides_search_flags() {
+        let help = help_text(Some("laws"));
+        assert!(
+            !help.contains("Trefferzahl bei /Suche"),
+            "{help}"
+        );
+        assert!(help.contains("shortcut, slug, title"), "{help}");
+    }
+
+    #[test]
+    fn rm_help_documents_workspace_all_not_search() {
+        let help = help_text(Some("rm"));
+        assert!(help.contains("Alle Workspaces löschen"), "{help}");
+        assert!(!help.contains("Alle Suchtreffer"), "{help}");
     }
 
     #[test]

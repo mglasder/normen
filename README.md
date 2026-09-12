@@ -44,6 +44,8 @@ overlay. `--refresh` re-downloads cached laws (print and TUI paths).
 
 ## Usage
 
+`normen --help` is the discovery text for the print CLI (JSON shapes, `/` search, exit codes).
+
 ### Print CLI (JSON on stdout)
 
 Law arguments print **pretty JSON** to stdout and never start the TUI.
