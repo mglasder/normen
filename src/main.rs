@@ -20,7 +20,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let (command, refresh) = parse_args(std::env::args_os())?;
+    let (command, flags) = parse_args(std::env::args_os())?;
     let config = Config::new(default_config_path());
     config.ensure_file();
     let cache_dir = default_cache_dir();
@@ -42,26 +42,27 @@ fn run() -> Result<(), String> {
                     load_law(&cache, download_law_xml, law_ref, refresh)
                 }),
                 Start::Attach { id },
-                refresh,
+                flags.refresh,
                 session_path,
             )?;
             app.run().map_err(|err| err.to_string())
         }
-        Command::Open { law, norm } => {
-            if let Some(name) = law.as_deref() {
-                eprintln!("Lade {name} …");
-            }
+        Command::Open => {
             let cache = cache_dir.clone();
             let mut app = App::start_with_path(
                 config,
                 Box::new(move |law_ref, refresh| {
                     load_law(&cache, download_law_xml, law_ref, refresh)
                 }),
-                Start::Fresh { law, norm },
-                refresh,
+                Start::Fresh {
+                    law: None,
+                    norm: None,
+                },
+                flags.refresh,
                 session_path,
             )?;
             app.run().map_err(|err| err.to_string())
         }
+        Command::Query { .. } | Command::Laws { .. } => Err("not implemented".into()),
     }
 }

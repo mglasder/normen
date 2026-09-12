@@ -7,19 +7,27 @@ use crate::catalog::resolve_law;
 use crate::session::WorkspaceStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuerySpec {
+    Outline,
+    Get(String),
+    Search(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Open {
-        law: Option<String>,
-        norm: Option<String>,
-    },
-    Attach {
-        id: Option<u32>,
-    },
+    Open,
+    Query { law: String, spec: QuerySpec },
+    Laws { filter: Option<String> },
+    Attach { id: Option<u32> },
     List,
-    Remove {
-        id: Option<u32>,
-        all: bool,
-    },
+    Remove { id: Option<u32>, all: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliFlags {
+    pub refresh: bool,
+    pub limit: Option<u32>,
+    pub all: bool,
 }
 
 #[derive(Parser)]
@@ -33,6 +41,10 @@ struct Cli {
     /// Gesetzestexte neu von gesetze-im-internet.de laden
     #[arg(long)]
     refresh: bool,
+    #[arg(long)]
+    limit: Option<u32>,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    all: bool,
     #[command(subcommand)]
     command: Option<SubCommand>,
     /// Kürzel, z.B. BGB, GG, StGB, VwGO
@@ -49,6 +61,10 @@ enum SubCommand {
     },
     /// List persisted workspaces
     List,
+    /// List or filter available laws
+    Laws {
+        filter: Option<String>,
+    },
     /// Delete persisted workspaces
     Rm {
         id: Option<u32>,
@@ -57,7 +73,7 @@ enum SubCommand {
     },
 }
 
-pub fn parse_args<I, T>(args: I) -> Result<(Command, bool), String>
+pub fn parse_args<I, T>(args: I) -> Result<(Command, CliFlags), String>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -74,9 +90,16 @@ where
             return Err(err.to_string());
         }
     };
+    if cli.limit == Some(0) {
+        return Err("--limit must be >= 1 (use --all for no cap)".into());
+    }
+    if cli.all && cli.limit.is_some() {
+        return Err("use --all or --limit, not both".into());
+    }
     let command = match cli.command {
         Some(SubCommand::Attach { id }) => Command::Attach { id },
         Some(SubCommand::List) => Command::List,
+        Some(SubCommand::Laws { filter }) => Command::Laws { filter },
         Some(SubCommand::Rm { id, all }) => {
             if !all && id.is_none() {
                 return Err("rm requires an id or --all".into());
@@ -86,12 +109,32 @@ where
             }
             Command::Remove { id, all }
         }
-        None => Command::Open {
-            law: cli.law,
-            norm: cli.norm,
+        None => match cli.law {
+            None => Command::Open,
+            Some(law) => Command::Query {
+                law,
+                spec: classify_norm(cli.norm),
+            },
         },
     };
-    Ok((command, cli.refresh))
+    Ok((
+        command,
+        CliFlags {
+            refresh: cli.refresh,
+            limit: cli.limit,
+            all: cli.all,
+        },
+    ))
+}
+
+fn classify_norm(norm: Option<String>) -> QuerySpec {
+    match norm {
+        None => QuerySpec::Outline,
+        Some(raw) if raw.starts_with('/') => {
+            QuerySpec::Search(raw.strip_prefix('/').unwrap_or(&raw).to_string())
+        }
+        Some(raw) => QuerySpec::Get(raw),
+    }
 }
 
 pub fn format_list(store: &WorkspaceStore) -> String {
@@ -140,7 +183,7 @@ pub fn apply_cli(cmd: &Command, store: &mut WorkspaceStore) -> Result<String, St
         Command::Remove { id: None, all: false } => {
             Err("rm requires an id or --all".into())
         }
-        Command::Open { .. } | Command::Attach { .. } => {
+        Command::Open | Command::Attach { .. } | Command::Query { .. } | Command::Laws { .. } => {
             Err("not a store command".into())
         }
     }
@@ -151,28 +194,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_bare_normen_is_open() {
-        let (cmd, refresh) = parse_args(["normen"]).unwrap();
+    fn parse_law_only_is_query_outline() {
+        let (cmd, flags) = parse_args(["normen", "BGB"]).unwrap();
         assert_eq!(
             cmd,
-            Command::Open {
-                law: None,
-                norm: None
+            Command::Query {
+                law: "BGB".into(),
+                spec: QuerySpec::Outline
             }
         );
-        assert!(!refresh);
+        assert_eq!(
+            flags,
+            CliFlags {
+                refresh: false,
+                limit: None,
+                all: false
+            }
+        );
     }
 
     #[test]
-    fn parse_law_and_norm() {
+    fn parse_law_and_citation_is_query_get() {
         let (cmd, _) = parse_args(["normen", "BGB", "433"]).unwrap();
         assert_eq!(
             cmd,
-            Command::Open {
-                law: Some("BGB".into()),
-                norm: Some("433".into())
+            Command::Query {
+                law: "BGB".into(),
+                spec: QuerySpec::Get("433".into())
             }
         );
+    }
+
+    #[test]
+    fn parse_slash_is_query_search() {
+        let (cmd, _) = parse_args(["normen", "BGB", "/kauf"]).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Query {
+                law: "BGB".into(),
+                spec: QuerySpec::Search("kauf".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_bare_word_second_arg_is_still_get() {
+        let (cmd, _) = parse_args(["normen", "BGB", "Kaufvertrag"]).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Query {
+                law: "BGB".into(),
+                spec: QuerySpec::Get("Kaufvertrag".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_laws_and_filter() {
+        assert_eq!(
+            parse_args(["normen", "laws"]).unwrap().0,
+            Command::Laws { filter: None }
+        );
+        assert_eq!(
+            parse_args(["normen", "laws", "bürger"]).unwrap().0,
+            Command::Laws {
+                filter: Some("bürger".into())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_limit_and_all_flags() {
+        let (_, flags) = parse_args(["normen", "--limit", "20", "BGB", "/kauf"]).unwrap();
+        assert_eq!(flags.limit, Some(20));
+        let (_, flags) = parse_args(["normen", "BGB", "/kauf", "--all"]).unwrap();
+        assert!(flags.all);
+    }
+
+    #[test]
+    fn parse_limit_zero_is_usage_error() {
+        let err = parse_args(["normen", "--limit", "0", "BGB", "/kauf"]).unwrap_err();
+        assert_eq!(err, "--limit must be >= 1 (use --all for no cap)");
+    }
+
+    #[test]
+    fn parse_all_with_limit_is_usage_error() {
+        let err = parse_args(["normen", "--all", "--limit", "5", "BGB", "/kauf"]).unwrap_err();
+        assert_eq!(err, "use --all or --limit, not both");
+    }
+
+    #[test]
+    fn parse_bare_normen_is_open_unit() {
+        let (cmd, flags) = parse_args(["normen"]).unwrap();
+        assert_eq!(cmd, Command::Open);
+        assert!(!flags.refresh);
+    }
+
+    #[test]
+    fn parse_refresh_with_law_is_query() {
+        let (cmd, flags) = parse_args(["normen", "--refresh", "bgb"]).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Query {
+                law: "bgb".into(),
+                spec: QuerySpec::Outline
+            }
+        );
+        assert!(flags.refresh);
     }
 
     #[test]
@@ -209,12 +337,6 @@ mod tests {
     #[test]
     fn parse_rm_requires_id_or_all() {
         assert!(parse_args(["normen", "rm"]).is_err());
-    }
-
-    #[test]
-    fn parse_refresh_flag() {
-        let (_, refresh) = parse_args(["normen", "--refresh", "bgb"]).unwrap();
-        assert!(refresh);
     }
 
     #[test]
