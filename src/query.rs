@@ -389,4 +389,24 @@ mod tests {
         assert_eq!(v["hits"][0]["title"], "Vertragstypische Pflichten beim Kaufvertrag");
         assert!(v["hits"][0]["preview"].as_str().unwrap().to_lowercase().contains("kauf"));
     }
+
+    #[test]
+    fn print_path_has_no_lade_side_channel() {
+        // run_print is the print product; it must not write to stdout/stderr.
+        let (cmd, flags) = parse_args(["normen", "BGB", "433"]).unwrap();
+        let json = run_print(&cmd, &flags, sample_load).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+        assert!(!json.contains("Lade"));
+    }
+
+    #[test]
+    fn query_fail_exit_codes_are_one_or_two() {
+        let unknown = run_print(
+            &parse_args(["normen", "nope"]).unwrap().0,
+            &parse_args(["normen", "nope"]).unwrap().1,
+            unused_load,
+        )
+        .unwrap_err();
+        assert_eq!(unknown.exit, 2);
+    }
 }

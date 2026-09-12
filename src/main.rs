@@ -3,23 +3,44 @@ use std::process::ExitCode;
 use normen::cli::{apply_cli, parse_args, Command};
 use normen::config::{default_config_path, Config};
 use normen::fetch::{default_cache_dir, download_law_xml, load_law};
+use normen::query::{run_print, QueryFail};
 use normen::session::WorkspaceStore;
 use normen::ui::{App, Start};
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprint!("{err}");
-            if !err.ends_with('\n') {
-                eprintln!();
-            }
-            ExitCode::FAILURE
+struct Fail {
+    message: String,
+    exit: u8,
+}
+
+impl From<String> for Fail {
+    fn from(message: String) -> Self {
+        Self { message, exit: 1 }
+    }
+}
+
+impl From<QueryFail> for Fail {
+    fn from(fail: QueryFail) -> Self {
+        Self {
+            message: fail.message,
+            exit: fail.exit,
         }
     }
 }
 
-fn run() -> Result<(), String> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(fail) => {
+            eprint!("{}", fail.message);
+            if !fail.message.ends_with('\n') {
+                eprintln!();
+            }
+            ExitCode::from(fail.exit)
+        }
+    }
+}
+
+fn run() -> Result<(), Fail> {
     let (command, flags) = parse_args(std::env::args_os())?;
     let config = Config::new(default_config_path());
     config.ensure_file();
@@ -45,7 +66,8 @@ fn run() -> Result<(), String> {
                 flags.refresh,
                 session_path,
             )?;
-            app.run().map_err(|err| err.to_string())
+            app.run().map_err(|err| err.to_string())?;
+            Ok(())
         }
         Command::Open => {
             let cache = cache_dir.clone();
@@ -61,8 +83,16 @@ fn run() -> Result<(), String> {
                 flags.refresh,
                 session_path,
             )?;
-            app.run().map_err(|err| err.to_string())
+            app.run().map_err(|err| err.to_string())?;
+            Ok(())
         }
-        Command::Query { .. } | Command::Laws { .. } => Err("not implemented".into()),
+        Command::Query { .. } | Command::Laws { .. } => {
+            let cache = cache_dir.clone();
+            let json = run_print(&command, &flags, |law_ref, refresh| {
+                load_law(&cache, download_law_xml, law_ref, refresh)
+            })?;
+            println!("{json}");
+            Ok(())
+        }
     }
 }
