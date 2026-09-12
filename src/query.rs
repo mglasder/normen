@@ -1,6 +1,7 @@
 use crate::catalog::{filter_laws, resolve_law, LawRef};
 use crate::cli::{CliFlags, Command, QuerySpec};
-use crate::models::Law;
+use crate::models::{CitationKey, Law};
+use crate::search::lookup_norm;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,14 @@ struct OutlineNorm {
 struct OutlineOut {
     law: &'static str,
     norms: Vec<OutlineNorm>,
+}
+
+#[derive(Serialize)]
+struct GetOut {
+    law: &'static str,
+    citation: String,
+    title: String,
+    text: String,
 }
 
 pub fn run_print(
@@ -79,6 +88,34 @@ pub fn run_print(
                                 title: norm.title,
                             })
                             .collect(),
+                    };
+                    serde_json::to_string_pretty(&out).map_err(|e| QueryFail {
+                        message: e.to_string(),
+                        exit: 1,
+                    })
+                }
+                QuerySpec::Get(raw) => {
+                    if CitationKey::parse_query(raw).is_none() {
+                        return Err(QueryFail {
+                            message: format!("not a citation: {raw}"),
+                            exit: 2,
+                        });
+                    }
+                    let loaded = load(law_ref, flags.refresh).map_err(|message| QueryFail {
+                        message,
+                        exit: 1,
+                    })?;
+                    let Some(norm) = lookup_norm(&loaded, raw) else {
+                        return Err(QueryFail {
+                            message: format!("unknown citation: {raw}"),
+                            exit: 2,
+                        });
+                    };
+                    let out = GetOut {
+                        law: law_ref.shortcut,
+                        citation: norm.citation.clone(),
+                        title: norm.title.clone(),
+                        text: norm.text.clone(),
                     };
                     serde_json::to_string_pretty(&out).map_err(|e| QueryFail {
                         message: e.to_string(),
@@ -186,5 +223,42 @@ mod tests {
         }).unwrap_err();
         assert_eq!(err.exit, 1);
         assert_eq!(err.message, "saw refresh");
+    }
+
+    #[test]
+    fn get_433_returns_norm_body() {
+        let (cmd, flags) = parse_args(["normen", "bgb", "433"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+        assert_eq!(v["law"], "BGB");
+        assert_eq!(v["citation"], "§ 433");
+        assert_eq!(v["title"], "Vertragstypische Pflichten beim Kaufvertrag");
+        assert!(v["text"].as_str().unwrap().contains("Kaufvertrag"));
+        assert!(v.get("keys").is_none());
+    }
+
+    #[test]
+    fn get_unknown_number_is_exit_two() {
+        let (cmd, flags) = parse_args(["normen", "BGB", "99999"]).unwrap();
+        let err = run_print(&cmd, &flags, sample_load).unwrap_err();
+        assert_eq!(err.exit, 2);
+        assert_eq!(err.message, "unknown citation: 99999");
+    }
+
+    #[test]
+    fn get_bare_word_is_not_a_citation() {
+        let (cmd, flags) = parse_args(["normen", "BGB", "Kaufvertrag"]).unwrap();
+        let err = run_print(&cmd, &flags, sample_load).unwrap_err();
+        assert_eq!(err.exit, 2);
+        assert_eq!(err.message, "not a citation: Kaufvertrag");
+    }
+
+    #[test]
+    fn get_ignores_limit_flag() {
+        let (cmd, flags) = parse_args(["normen", "--limit", "1", "BGB", "433"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+        assert_eq!(v["citation"], "§ 433");
+        assert!(v.get("hits").is_none());
     }
 }
