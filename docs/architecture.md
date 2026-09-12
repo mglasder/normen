@@ -1,10 +1,11 @@
 # Architecture
 
-normen is a single Rust binary. `main` parses the CLI, then either prints
-workspace rows or runs a Ratatui loop. Laws are not bundled: the catalog is a
-static list of shortcuts and gesetze-im-internet.de slugs. Opening a law
-downloads `xml.zip`, caches the XML under `~/.normen`, and parses it into
-in-memory `Law` / `Norm` values. Workspaces are written only on explicit save.
+normen is a single Rust binary. `main` parses the CLI, then prints JSON
+(`query::run_print`), prints workspace rows, or runs a Ratatui loop. Laws
+are not bundled: the catalog is a static list of shortcuts and
+gesetze-im-internet.de slugs. Opening a law downloads `xml.zip`, caches
+the XML under `~/.normen`, and parses it into in-memory `Law` / `Norm`
+values. Workspaces are written only on explicit save.
 
 ## Layers
 
@@ -13,6 +14,7 @@ flowchart TB
     subgraph process [Process]
         MAIN["src/main.rs"]
         CLI["cli"]
+        QUERY["query"]
         CFG["config"]
         STORE["session"]
         APP["ui::App"]
@@ -41,6 +43,7 @@ flowchart TB
     end
 
     MAIN --> CLI
+    MAIN --> QUERY
     MAIN --> CFG
     MAIN --> STORE
     MAIN --> APP
@@ -48,6 +51,10 @@ flowchart TB
 
     CLI --> CAT
     CLI --> STORE
+    QUERY --> CAT
+    QUERY --> FETCH
+    QUERY --> SRCH
+    QUERY --> MODEL
     CFG --> CONF
     STORE --> SESS
     APP --> CFG
@@ -71,9 +78,9 @@ flowchart TB
     THEME --> CFG
 ```
 
-`src/lib.rs` exports every module. The binary is a thin dispatcher. Tests live
-next to the code (`#[cfg(test)]` in each module). UI tests drive `App` with a
-fake loader and a Ratatui `TestBackend`.
+`src/lib.rs` exports every module (including `query`). The binary is a thin
+dispatcher. Tests live next to the code (`#[cfg(test)]` in each module). UI
+tests drive `App` with a fake loader and a Ratatui `TestBackend`.
 
 ## Startup
 
@@ -86,6 +93,9 @@ flowchart TD
     STORE --> APPLY["cli::apply_cli"]
     APPLY --> STDOUT["print and exit"]
 
+    CMD -->|query / laws| RUN["query::run_print"]
+    RUN --> JSON["pretty JSON on stdout"]
+
     CMD -->|open / attach| CONF["Config::new + ensure_file"]
     CONF --> APP["App::start_with_path"]
     APP --> TERM{"stdout is a TTY?"}
@@ -93,10 +103,12 @@ flowchart TD
     TERM -->|yes| LOOP["raw mode + alternate screen + event loop"]
 ```
 
-Bare `normen` is `Command::Open` with no law: a new unsaved workspace on MENU.
-`normen BGB 433` is the same command with an initial law and citation.
-`attach` / `attach <id>` restore tabs from `sessions.json`. `list` and `rm`
-never enter the TUI.
+Bare `normen` is `Command::Open`: a new unsaved workspace on MENU. A law
+argument (`normen BGB`, `normen BGB 433`, `normen BGB /kauf`) is
+`Command::Query` and goes through `query::run_print` — JSON on stdout, no
+TUI, no `Lade …` side channel. `normen laws [filter]` is `Command::Laws`
+on the same path. `attach` / `attach <id>` restore tabs from
+`sessions.json`. `list` and `rm` never enter the TUI or `run_print`.
 
 `--refresh` is a flag on every path that can open a law. It forces
 `fetch::load_law` to download again.

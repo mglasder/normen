@@ -35,28 +35,54 @@ Uncomment and set tokens as quoted `#rrggbb` (`primary = "#9ce5c0"`). Names are
 case-insensitive. Invalid or omitted tokens keep the compiled defaults. Restart
 to apply. Existing conf files are never patched.
 
-Bare `normen` always starts a **new unsaved** workspace (MENU, or one tab if
-you pass a law). Use `normen attach` for the last saved one, or
-`normen attach <id>`. `normen list` / `normen rm` manage the JSON file.
-**Ctrl-q** then `y` writes a row (MENU-only quit writes nothing).
-**Ctrl-c** then `y` quits without saving and deletes that session id if any.
-**Esc** cancels either overlay. `--refresh` re-downloads cached laws.
+Bare `normen` always starts a **new unsaved** workspace on MENU. Use
+`normen attach` for the last saved one, or `normen attach <id>`.
+`normen list` / `normen rm` manage the JSON file. **Ctrl-q** then `y`
+writes a row (MENU-only quit writes nothing). **Ctrl-c** then `y` quits
+without saving and deletes that session id if any. **Esc** cancels either
+overlay. `--refresh` re-downloads cached laws (print and TUI paths).
 
 ## Usage
 
+### Print CLI (JSON on stdout)
+
+Law arguments print **pretty JSON** to stdout and never start the TUI.
+There is no `--json` flag and no `Lade …` progress line on this path;
+errors go to stderr with exit code 1 (load/parse) or 2 (unknown law or
+citation).
+
 ```bash
-cargo run
-cargo test
+normen laws                 # catalog: { "query", "laws": [{ shortcut, slug, title }] }
+normen laws bürger          # filter by shortcut, slug, or title substring
+
+normen BGB                  # outline: { "law", "norms": [{ citation, title }] }
+normen BGB 433              # get one norm: { "law", "citation", "title", "text" }
+normen BGB /kauf            # in-law search: { "law", "query", "limit", "total", "hits" }
+normen --limit 20 BGB /kauf # cap hits (default 10; ignored on outline/get)
+normen --all BGB /kauf      # all hits; "limit" is null
+normen --refresh BGB        # re-download before outline/get/search
 ```
 
-Or jump straight in: `cargo run -- bgb`, `cargo run -- BGB 433`, `cargo run -- gg /würde`.
+The second argument is either a citation (`433`, `31a`) or a `/` search
+needle. A bare word like `Kaufvertrag` is rejected as “not a citation”.
+
+### TUI
 
 ```bash
-normen attach        # last saved workspace (error if none)
-normen attach 3      # workspace id 3
-normen list          # id and open tabs
+normen                 # new unsaved workspace (MENU)
+normen attach          # last saved workspace (error if none)
+normen attach 3        # workspace id 3
+normen list            # id and open tabs
 normen rm 3
 normen rm --all
+```
+
+### Development
+
+```bash
+cargo run              # TUI (same as bare normen)
+cargo run -- BGB       # print outline JSON
+cargo test
 ```
 
 Opening a law shows the full text and **always creates a new tab**. The same
@@ -67,8 +93,7 @@ The status bar at the bottom shows the mode (`NORMAL`, `SEARCH`, `PARA`) on
 the left and the current norm over the last numbered norm on the right
 (`35a:2385`). `Ctrl-n` then `m` or `0` returns to MENU; `Ctrl-n` then
 `x` closes the current law tab (MENU cannot be closed). Closing the last
-law tab returns to MENU. Opening a law again starts at the beginning
-(CLI `norm` still applies only to that new tab).
+law tab returns to MENU. Opening a law again starts at the beginning.
 
 ### Normal mode
 
