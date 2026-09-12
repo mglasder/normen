@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod query;
 pub mod citation;
 pub mod cli;
 pub mod config;
