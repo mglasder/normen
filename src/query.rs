@@ -1,7 +1,7 @@
 use crate::catalog::{filter_laws, resolve_law, LawRef};
 use crate::cli::{CliFlags, Command, QuerySpec};
 use crate::models::{CitationKey, Law};
-use crate::search::lookup_norm;
+use crate::search::{lookup_norm, search_norms};
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +41,23 @@ struct GetOut {
     citation: String,
     title: String,
     text: String,
+}
+
+#[derive(Serialize)]
+struct SearchHitOut {
+    citation: String,
+    title: String,
+    preview: String,
+    score: f64,
+}
+
+#[derive(Serialize)]
+struct SearchOut {
+    law: &'static str,
+    query: String,
+    limit: Option<usize>,
+    total: usize,
+    hits: Vec<SearchHitOut>,
 }
 
 pub fn run_print(
@@ -122,10 +139,42 @@ pub fn run_print(
                         exit: 1,
                     })
                 }
-                _ => Err(QueryFail {
-                    message: "not implemented".into(),
-                    exit: 1,
-                }),
+                QuerySpec::Search(needle) => {
+                    let loaded = load(law_ref, flags.refresh).map_err(|message| QueryFail {
+                        message,
+                        exit: 1,
+                    })?;
+                    let hits_all = search_norms(&loaded, needle);
+                    let total = hits_all.len();
+                    let (hits, limit) = if flags.all {
+                        (hits_all, None)
+                    } else {
+                        let cap = flags.limit.unwrap_or(10) as usize;
+                        (
+                            hits_all.into_iter().take(cap).collect(),
+                            Some(cap),
+                        )
+                    };
+                    let out = SearchOut {
+                        law: law_ref.shortcut,
+                        query: needle.clone(),
+                        limit,
+                        total,
+                        hits: hits
+                            .into_iter()
+                            .map(|hit| SearchHitOut {
+                                citation: hit.norm.citation,
+                                title: hit.norm.title,
+                                preview: hit.preview,
+                                score: hit.score,
+                            })
+                            .collect(),
+                    };
+                    serde_json::to_string_pretty(&out).map_err(|e| QueryFail {
+                        message: e.to_string(),
+                        exit: 1,
+                    })
+                }
             }
         }
         _ => Err(QueryFail {
@@ -140,8 +189,23 @@ mod tests {
     use super::*;
     use crate::cli::parse_args;
     use crate::catalog::LawRef;
-    use crate::models::Law;
+    use crate::models::{CitationKey, Law, Norm};
     use crate::parser::parse_law_xml;
+
+    fn many_vertrag() -> Law {
+        Law {
+            abbreviation: "BGB".into(),
+            title: "BGB".into(),
+            norms: (1..=15)
+                .map(|n| Norm {
+                    citation: format!("§ {n}"),
+                    title: format!("Norm {n} Vertrag"),
+                    text: "Vertrag text".into(),
+                    keys: vec![CitationKey::new(n)],
+                })
+                .collect(),
+        }
+    }
 
     const SAMPLE: &[u8] = include_bytes!("../tests/fixtures/sample.xml");
 
@@ -260,5 +324,69 @@ mod tests {
             serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
         assert_eq!(v["citation"], "§ 433");
         assert!(v.get("hits").is_none());
+    }
+
+    #[test]
+    fn search_default_limit_is_ten() {
+        let (cmd, flags) = parse_args(["normen", "BGB", "/Vertrag"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["law"], "BGB");
+        assert_eq!(v["query"], "Vertrag");
+        assert_eq!(v["limit"], 10);
+        assert_eq!(v["total"], 15);
+        assert_eq!(v["hits"].as_array().unwrap().len(), 10);
+        let hit = &v["hits"][0];
+        assert!(hit.get("text").is_none());
+        assert!(hit.get("citation").is_some());
+        assert!(hit.get("title").is_some());
+        assert!(hit.get("preview").is_some());
+        assert!(hit.get("score").is_some());
+    }
+
+    #[test]
+    fn search_limit_flag_caps_hits() {
+        let (cmd, flags) = parse_args(["normen", "--limit", "3", "BGB", "/Vertrag"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["limit"], 3);
+        assert_eq!(v["total"], 15);
+        assert_eq!(v["hits"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn search_all_is_uncapped_null_limit() {
+        let (cmd, flags) = parse_args(["normen", "--all", "BGB", "/Vertrag"]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+        )
+        .unwrap();
+        assert!(v["limit"].is_null());
+        assert_eq!(v["total"], 15);
+        assert_eq!(v["hits"].as_array().unwrap().len(), 15);
+    }
+
+    #[test]
+    fn search_empty_hits_is_ok_document() {
+        let (cmd, flags) = parse_args(["normen", "BGB", "/xyzzy"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+        assert_eq!(v["total"], 0);
+        assert_eq!(v["limit"], 10);
+        assert_eq!(v["hits"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn search_uses_sample_kauf_preview() {
+        let (cmd, flags) = parse_args(["normen", "BGB", "/Kaufvertrag"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+        assert_eq!(v["hits"][0]["citation"], "§ 433");
+        assert_eq!(v["hits"][0]["title"], "Vertragstypische Pflichten beim Kaufvertrag");
+        assert!(v["hits"][0]["preview"].as_str().unwrap().to_lowercase().contains("kauf"));
     }
 }
