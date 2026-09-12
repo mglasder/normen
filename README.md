@@ -72,6 +72,11 @@ needle. A bare word like `Kaufvertrag` is rejected as “not a citation”.
 normen                 # new unsaved workspace (MENU)
 normen attach          # last saved workspace (error if none)
 normen attach 3        # workspace id 3
+```
+
+### Workspace management
+
+```bash
 normen list            # id and open tabs
 normen rm 3
 normen rm --all
