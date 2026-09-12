@@ -34,16 +34,17 @@ pub struct CliFlags {
 #[command(
     name = "normen",
     about = "Deutsche Gesetze lesen und durchsuchen (gesetze-im-internet.de).",
-    args_conflicts_with_subcommands = true,
     disable_help_subcommand = true
 )]
 struct Cli {
     /// Gesetzestexte neu von gesetze-im-internet.de laden
-    #[arg(long)]
+    #[arg(long, global = true)]
     refresh: bool,
-    #[arg(long)]
+    /// Trefferzahl bei /Suche (Standard 10)
+    #[arg(long, global = true)]
     limit: Option<u32>,
-    #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// Alle Suchtreffer ausgeben (kein Limit)
+    #[arg(long, global = true, action = clap::ArgAction::SetTrue)]
     all: bool,
     #[command(subcommand)]
     command: Option<SubCommand>,
@@ -301,6 +302,27 @@ mod tests {
             }
         );
         assert!(flags.refresh);
+    }
+
+    #[test]
+    fn parse_refresh_after_attach_is_global() {
+        let (cmd, flags) = parse_args(["normen", "attach", "--refresh"]).unwrap();
+        assert_eq!(cmd, Command::Attach { id: None });
+        assert!(flags.refresh);
+    }
+
+    #[test]
+    fn parse_refresh_before_attach_is_global() {
+        let (cmd, flags) = parse_args(["normen", "--refresh", "attach"]).unwrap();
+        assert_eq!(cmd, Command::Attach { id: None });
+        assert!(flags.refresh);
+    }
+
+    #[test]
+    fn parse_limit_after_laws_is_global() {
+        let (cmd, flags) = parse_args(["normen", "laws", "--limit", "5"]).unwrap();
+        assert_eq!(cmd, Command::Laws { filter: None });
+        assert_eq!(flags.limit, Some(5));
     }
 
     #[test]
