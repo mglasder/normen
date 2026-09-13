@@ -18,10 +18,6 @@ Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 - Workspaces you save explicitly; never auto-resumed
 - Remappable keys and colors in the config file
 
-## Architecture
-
-Crate layout, data flow, and on-disk files: [docs/architecture.md](docs/architecture.md).
-
 ## Files
 
 | Path | Purpose |
