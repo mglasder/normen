@@ -3,6 +3,7 @@ name = "normen"
 version = "0.1.0"
 edition = "2021"
 description = "Vim-style CLI to search and read German law from gesetze-im-internet.de"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
