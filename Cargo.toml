@@ -3,7 +3,13 @@ name = "normen"
 version = "0.1.0"
 edition = "2021"
 description = "Vim-style CLI to search and read German law from gesetze-im-internet.de"
+authors = ["Magnus Glasder <magnus.glasder@gmail.com>"]
+repository = "https://github.com/mglasder/normen"
+homepage = "https://github.com/mglasder/normen"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["cli", "tui", "law", "germany", "gesetze"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
