@@ -1,4 +1,6 @@
 /target/
 .cursor/
 .superpowers/
-docs/
+docs/*
+!docs/adr/
+!docs/adr/**
