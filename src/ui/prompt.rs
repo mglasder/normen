@@ -58,6 +58,16 @@ impl SearchPrompt {
     }
 }
 
+pub const SEARCH_PLACEHOLDER: &str = "/ Suche";
+
+pub fn search_line(searching: bool, query: &str) -> String {
+    if searching {
+        format!("/{query}")
+    } else {
+        SEARCH_PLACEHOLDER.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +106,12 @@ mod tests {
         assert_eq!(p.highlight, 2);
         p.move_highlight(-10, 3);
         assert_eq!(p.highlight, 0);
+    }
+
+    #[test]
+    fn search_line_uses_german_placeholder() {
+        assert_eq!(search_line(false, ""), "/ Suche");
+        assert_eq!(search_line(true, "gg"), "/gg");
+        assert_eq!(search_line(true, ""), "/");
     }
 }

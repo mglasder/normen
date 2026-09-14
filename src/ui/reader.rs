@@ -44,7 +44,7 @@ impl ReaderTab {
     }
 
     pub fn shortcut(&self) -> &str {
-        self.law_ref.shortcut
+        self.law_ref.shortcut.as_str()
     }
 
     pub fn current_citation(&self) -> Option<&str> {

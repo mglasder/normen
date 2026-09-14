@@ -36,6 +36,9 @@ pub enum Action {
     TabPrev,
     TabClose,
     TabMenu,
+    Bundesrecht,
+    RemoveCore,
+    MarksList,
 }
 
 pub struct Keymap {
@@ -47,6 +50,7 @@ const PREFIX_ACTIONS: &[(&str, Action)] = &[
     ("tab_prev", Action::TabPrev),
     ("tab_close", Action::TabClose),
     ("tab_menu", Action::TabMenu),
+    ("tab_bundesrecht", Action::Bundesrecht),
 ];
 
 const MENU_ACTIONS: &[(&str, Action)] = &[
@@ -61,6 +65,8 @@ const MENU_ACTIONS: &[(&str, Action)] = &[
     ("help", Action::Help),
     ("quit", Action::Quit),
     ("tab_prefix", Action::TabPrefix),
+    ("core_remove", Action::RemoveCore),
+    ("marks_list", Action::MarksList),
 ];
 
 const READER_ACTIONS: &[(&str, Action)] = &[
@@ -137,6 +143,7 @@ fn pretty_key_part(part: &str) -> String {
             "escape" => "Esc",
             "enter" => "Enter",
             "slash" => "/",
+            "tab" => "Tab",
             other => other,
         };
         out.push_str(pretty);
@@ -184,6 +191,7 @@ fn key_eq(key: Key, part: &str) -> bool {
         Key::Down => part == "down",
         Key::Left => part == "left",
         Key::Right => part == "right",
+        Key::Tab => part == "tab",
     }
 }
 
@@ -194,6 +202,7 @@ pub fn map_crossterm(event: event::KeyEvent) -> Option<Key> {
     let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
     match event.code {
         KeyCode::Char(c) if ctrl => Some(Key::Ctrl(c.to_ascii_lowercase())),
+        KeyCode::Char('\t') => Some(Key::Tab),
         KeyCode::Char('/') => Some(Key::Slash),
         KeyCode::Char(c) => {
             let c = if event.modifiers.contains(KeyModifiers::SHIFT) && c.is_ascii_lowercase() {
@@ -210,6 +219,7 @@ pub fn map_crossterm(event: event::KeyEvent) -> Option<Key> {
         KeyCode::Down => Some(Key::Down),
         KeyCode::Left => Some(Key::Left),
         KeyCode::Right => Some(Key::Right),
+        KeyCode::Tab | KeyCode::BackTab => Some(Key::Tab),
         _ => None,
     }
 }
@@ -249,6 +259,18 @@ mod tests {
     }
 
     #[test]
+    fn prefix_a_is_bundesrecht() {
+        let km = keymap("");
+        assert_eq!(
+            km.resolve(Key::Char('a'), Context::Prefix),
+            Some(Action::Bundesrecht)
+        );
+        assert_eq!(km.resolve(Key::Char('d'), Context::Menu), Some(Action::RemoveCore));
+        assert_eq!(km.resolve(Key::Char('j'), Context::Menu), Some(Action::MoveDown));
+        assert_eq!(km.resolve(Key::Tab, Context::Menu), Some(Action::MarksList));
+    }
+
+    #[test]
     fn unmodified_quit_from_conf_stays_ctrl_q() {
         let km = keymap("[picker]\nquit = q\n");
         assert_eq!(km.resolve(Key::Char('q'), Context::Reader), None);
@@ -262,6 +284,7 @@ mod tests {
         assert_eq!(pretty_binding("j,down"), "j");
         assert_eq!(pretty_binding("ctrl+d"), "Ctrl-d");
         assert_eq!(pretty_binding("escape"), "Esc");
+        assert_eq!(pretty_binding("tab"), "Tab");
         assert_eq!(pretty_binding("enter"), "Enter");
     }
 
@@ -277,5 +300,15 @@ mod tests {
             crossterm::event::KeyModifiers::NONE,
         );
         assert_eq!(map_crossterm(plain), Some(Key::Char('j')));
+        let tab = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Tab,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(map_crossterm(tab), Some(Key::Tab));
+        let tab_char = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('\t'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        assert_eq!(map_crossterm(tab_char), Some(Key::Tab));
     }
 }

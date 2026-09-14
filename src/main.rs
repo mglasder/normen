@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use normen::catalog::resolve_core;
 use normen::cli::{apply_cli, parse_args, Command};
 use normen::config::{default_config_path, Config};
 use normen::fetch::{default_cache_dir, download_law_xml, load_law};
@@ -87,8 +88,25 @@ fn run() -> Result<(), Fail> {
             Ok(())
         }
         Command::Query { .. } | Command::Laws { .. } => {
+            let mut index = normen::bundesrecht::load_cache(&cache_dir);
+            let order = config.core_order();
+            let (mut core, mut warnings) = resolve_core(order.as_deref(), &index);
+            if !warnings.is_empty() {
+                if let Ok(fetched) =
+                    normen::bundesrecht::fetch_index(normen::bundesrecht::download_teilliste)
+                {
+                    let _ = normen::bundesrecht::save_cache(&cache_dir, &fetched);
+                    index = fetched;
+                    let resolved = resolve_core(order.as_deref(), &index);
+                    core = resolved.0;
+                    warnings = resolved.1;
+                }
+            }
+            if !warnings.is_empty() {
+                eprint!("unknown law {}\n", warnings.join(", "));
+            }
             let cache = cache_dir.clone();
-            let json = run_print(&command, &flags, |law_ref, refresh| {
+            let json = run_print(&command, &flags, &core, |law_ref, refresh| {
                 load_law(&cache, download_law_xml, law_ref, refresh)
             })?;
             println!("{json}");

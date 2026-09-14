@@ -26,6 +26,7 @@ move_right = l,right
 confirm = enter
 help = ?
 quit = ctrl+q
+marks_list = tab
 
 [reader]
 enter_search = /
@@ -42,6 +43,13 @@ tab_next = n
 tab_prev = p
 tab_close = x
 tab_menu = m
+tab_bundesrecht = a
+
+# [core]
+# order = BGB, GG, VwGO, VwVfG, BVerfGG, GOBT, GOBR, PartG, VereinsG, VersammlG, BauGB, BauNVO, VwZG, VwVG, StGB, ZPO, StPO, HGB, EGBGB
+# Missing section uses the shipped CORE for a new session.
+# TUI add/remove is session-only: Ctrl-q saves it with the workspace, Ctrl-c discards it.
+# Edit this list to change the default for a new `normen`.
 
 # [theme]
 # primary = \"#9ce5c0\"
@@ -67,6 +75,7 @@ pub fn default_keys() -> HashMap<String, String> {
         ("confirm".into(), "enter".into()),
         ("help".into(), "?".into()),
         ("enter_search".into(), "/".into()),
+        ("marks_list".into(), "tab".into()),
         ("paragraph_prev".into(), "K,shift+k".into()),
         ("paragraph_next".into(), "J,shift+j".into()),
         ("goto_top".into(), "g".into()),
@@ -78,6 +87,8 @@ pub fn default_keys() -> HashMap<String, String> {
         ("tab_prev".into(), "p".into()),
         ("tab_close".into(), "x".into()),
         ("tab_menu".into(), "m".into()),
+        ("tab_bundesrecht".into(), "a".into()),
+        ("core_remove".into(), "d".into()),
         ("quit".into(), "ctrl+q".into()),
     ])
 }
@@ -160,7 +171,7 @@ impl Config {
             resolved.insert("quit".into(), default_keys()["quit"].clone());
         }
         let defaults = default_keys();
-        for name in ["tab_next", "tab_prev", "tab_close", "tab_menu"] {
+        for name in ["tab_next", "tab_prev", "tab_close", "tab_menu", "tab_bundesrecht"] {
             let value = resolved.get(name).cloned().unwrap_or_default();
             resolved.insert(name.into(), tab_suffix(&value, &defaults[name]));
         }
@@ -195,6 +206,90 @@ impl Config {
         }
         resolved
     }
+
+    pub fn core_order(&self) -> Option<Vec<String>> {
+        if self.ini.section(Some("core")).is_none() {
+            return None;
+        }
+        let raw = self.get("core", "order", Some(""))?;
+        Some(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    pub fn write_core_order(&self, shortcuts: &[String]) -> Result<(), String> {
+        write_core_section(&self.path, shortcuts)
+    }
+}
+
+pub fn write_core_section(path: &Path, shortcuts: &[String]) -> Result<(), String> {
+    let csv = shortcuts.join(", ");
+    let section = format!("[core]\norder = {csv}\n");
+    let mut text = if path.exists() {
+        fs::read_to_string(path).map_err(|err| format!("conf read: {err}"))?
+    } else {
+        String::new()
+    };
+    text = match replace_core_section(&text, &section) {
+        Some(updated) => updated,
+        None => {
+            let mut out = text;
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(&section);
+            out
+        }
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("conf: {err}"))?;
+    }
+    fs::write(path, text).map_err(|err| format!("conf write: {err}"))
+}
+
+fn replace_core_section(text: &str, section: &str) -> Option<String> {
+    let start = find_section_header(text, "core")?;
+    let end = next_section_header(text, start + 1).unwrap_or(text.len());
+    let mut out = String::new();
+    out.push_str(&text[..start]);
+    out.push_str(section);
+    if !section.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&text[end..]);
+    Some(out)
+}
+
+fn find_section_header(text: &str, name: &str) -> Option<usize> {
+    let needle = format!("[{name}]");
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == needle {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn next_section_header(text: &str, from: usize) -> Option<usize> {
+    let rest = &text[from..];
+    let mut offset = from;
+    for line in rest.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 fn load_ini(path: &Path) -> Ini {
@@ -272,6 +367,8 @@ mod tests {
         assert_eq!(keys.get("tab_prev").unwrap(), "p");
         assert_eq!(keys.get("tab_close").unwrap(), "x");
         assert_eq!(keys.get("tab_menu").unwrap(), "m");
+        assert_eq!(keys.get("tab_bundesrecht").unwrap(), "a");
+        assert_eq!(keys.get("core_remove").unwrap(), "d");
         assert_eq!(keys.get("quit").unwrap(), "ctrl+q");
         assert_eq!(
             keys.get("move_left").unwrap(),
@@ -401,6 +498,84 @@ mod tests {
         assert!(DEFAULT_TEXT.contains("# primary = \"#9ce5c0\""));
         assert!(DEFAULT_TEXT.contains("# search_fg = \"#10171e\""));
         assert!(!DEFAULT_TEXT.lines().any(|l| l.starts_with("[theme]")));
+    }
+
+    #[test]
+    fn default_text_comments_core_section() {
+        assert!(DEFAULT_TEXT.contains("# [core]"));
+        assert!(DEFAULT_TEXT.contains("# order = BGB, GG"));
+        assert!(!DEFAULT_TEXT.lines().any(|l| l.starts_with("[core]")));
+    }
+
+    #[test]
+    fn missing_core_section_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "[keys]\nmove_down = j\n").unwrap();
+        assert_eq!(Config::new(&path).core_order(), None);
+    }
+
+    #[test]
+    fn core_order_parses_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "[core]\norder = BGB, GG, StVG\n").unwrap();
+        assert_eq!(
+            Config::new(&path).core_order(),
+            Some(vec!["BGB".into(), "GG".into(), "StVG".into()])
+        );
+    }
+
+    #[test]
+    fn empty_core_order_is_empty_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "[core]\norder =\n").unwrap();
+        assert_eq!(Config::new(&path).core_order(), Some(vec![]));
+    }
+
+    #[test]
+    fn write_core_appends_without_touching_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "[keys]\nmove_down = j  # vim\n").unwrap();
+        write_core_section(&path, &["BGB".into(), "GG".into()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("move_down = j  # vim"));
+        assert!(text.contains("[core]\norder = BGB, GG\n"));
+        assert_eq!(
+            Config::new(&path).core_order(),
+            Some(vec!["BGB".into(), "GG".into()])
+        );
+    }
+
+    #[test]
+    fn write_core_replaces_existing_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(
+            &path,
+            "[keys]\nhelp = ?\n\n[core]\norder = BGB\n\n[tabs]\ntab_menu = m\n",
+        )
+        .unwrap();
+        write_core_section(&path, &["GG".into(), "StGB".into()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[keys]\nhelp = ?\n"));
+        assert!(text.contains("[core]\norder = GG, StGB\n"));
+        assert!(text.contains("[tabs]\ntab_menu = m\n"));
+        assert!(!text.contains("order = BGB"));
+    }
+
+    #[test]
+    fn write_core_does_not_replace_commented_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normen.conf");
+        std::fs::write(&path, "# [core]\n# order = BGB\n").unwrap();
+        write_core_section(&path, &["GG".into()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# [core]"));
+        assert!(text.contains("# order = BGB"));
+        assert!(text.contains("[core]\norder = GG\n"));
     }
 
     #[test]

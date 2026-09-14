@@ -1,3 +1,4 @@
+pub mod bundesrecht;
 pub mod keymap;
 pub mod menu;
 pub mod prompt;
@@ -14,24 +15,27 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Layout, Margin, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::catalog::{resolve_law, LawRef};
+use crate::catalog::{apply_marks, remove_from_core, resolve_core, resolve_in, LawRef};
 use crate::config::Config;
 use crate::document::{iter_body_blocks, norm_heading, BlockKind};
 use crate::models::Law;
 use crate::search::{format_search_hit, highlight_text, SpanMark};
 use crate::session::{WorkspaceStore, WorkspaceTab};
 
+use self::bundesrecht::{
+    slug_gap, title_indent, wrap_slug, wrap_title, BundesrechtOverlay, IDENTIFIER_WIDTH,
+};
 use self::keymap::{map_crossterm, pretty_binding, Action, Context, Keymap};
 use self::menu::{para_char, MenuState};
-use self::prompt::Phase;
+use self::prompt::{search_line, Phase};
 use self::reader::ReaderTab;
-use self::theme::Theme;
+use self::theme::{Theme, SEARCH_FIELD_BG};
 
 pub const WINDOW_RADIUS: usize = 16;
 
@@ -68,6 +72,7 @@ pub enum Key {
     Down,
     Left,
     Right,
+    Tab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +88,10 @@ pub struct App {
     keymap: Keymap,
     load: Box<dyn Fn(&LawRef, bool) -> Result<Law, String>>,
     menu: MenuState,
+    index: Vec<LawRef>,
+    overlay: Option<BundesrechtOverlay>,
+    remove_pending: Option<LawRef>,
+    cache_dir: PathBuf,
     tabs: Vec<ReaderTab>,
     active: i32,
     last: i32,
@@ -94,6 +103,7 @@ pub struct App {
     refresh: bool,
     workspaces: WorkspaceStore,
     session_id: Option<u32>,
+    launch_core: Vec<String>,
     load_error: Option<String>,
     body_width: u16,
     body_height: u16,
@@ -161,11 +171,27 @@ impl App {
         session_path: PathBuf,
     ) -> Self {
         let keymap = Keymap::from_config(&config);
+        let cache_dir = session_path
+            .parent()
+            .unwrap_or(session_path.as_path())
+            .to_path_buf();
+        let index = crate::bundesrecht::load_cache(&cache_dir);
+        let (core, warnings) = resolve_core(config.core_order().as_deref(), &index);
+        let load_error = if warnings.is_empty() {
+            None
+        } else {
+            Some(format!("unknown law {}", warnings.join(", ")))
+        };
+        let launch_core: Vec<String> = core.iter().map(|law| law.shortcut.clone()).collect();
         let mut app = Self {
             config,
             keymap,
             load,
-            menu: MenuState::new(),
+            menu: MenuState::new(core),
+            index,
+            overlay: None,
+            remove_pending: None,
+            cache_dir,
             tabs: Vec::new(),
             active: -1,
             last: -1,
@@ -177,13 +203,14 @@ impl App {
             refresh,
             workspaces: WorkspaceStore::open(session_path),
             session_id: None,
-            load_error: None,
+            launch_core,
+            load_error,
             body_width: 80,
             body_height: 16,
         };
         if let Some(query) = initial_law {
-            if let Some(law_ref) = resolve_law(&query) {
-                app.open_tab(*law_ref, initial_norm.as_deref());
+            if let Some(law_ref) = resolve_in(&query, &app.menu.core).cloned() {
+                app.open_tab(law_ref, initial_norm.as_deref());
             }
         }
         app
@@ -198,14 +225,21 @@ impl App {
             .get(id)
             .cloned()
             .ok_or_else(|| format!("no persisted session {id}"))?;
+        if let Some(order) = &workspace.core {
+            let (core, warnings) = resolve_core(Some(order), &self.index);
+            if !warnings.is_empty() {
+                self.load_error = Some(format!("unknown law {}", warnings.join(", ")));
+            }
+            self.menu.set_core(core);
+        }
         let mut failed = false;
         for tab in &workspace.tabs {
-            let Some(law_ref) = resolve_law(&tab.slug) else {
+            let Some(law_ref) = resolve_in(&tab.slug, &self.menu.core).cloned() else {
                 self.load_error = Some(format!("unknown law {}", tab.slug));
                 failed = true;
                 continue;
             };
-            self.open_tab(*law_ref, Some(tab.citation.as_str()));
+            self.open_tab(law_ref, Some(tab.citation.as_str()));
             if self.load_error.is_some() {
                 failed = true;
             }
@@ -214,6 +248,7 @@ impl App {
             return Ok(());
         }
         self.session_id = Some(id);
+        self.launch_core = self.core_shortcuts();
         self.workspaces.touch(id);
         if workspace.active < 0 {
             self.show_menu();
@@ -285,6 +320,16 @@ impl App {
             }
             return;
         }
+        if self.remove_pending.is_some() {
+            if is_yes(key) {
+                if let Some(law) = self.remove_pending.take() {
+                    self.apply_core(remove_from_core(&self.menu.core, &law.shortcut));
+                }
+            } else if self.keymap.resolve(key, ctx) == Some(Action::EnterNormal) {
+                self.remove_pending = None;
+            }
+            return;
+        }
         if self.help {
             if self.keymap.resolve(key, ctx) == Some(Action::Quit) {
                 self.help = false;
@@ -320,6 +365,10 @@ impl App {
             self.prefix = true;
             return;
         }
+        if self.overlay.is_some() {
+            self.handle_overlay(key);
+            return;
+        }
         if self.on_menu() {
             self.handle_menu(key);
         } else {
@@ -329,13 +378,27 @@ impl App {
 
     fn run_prefix(&mut self, key: Key) {
         match self.keymap.resolve(key, Context::Prefix) {
-            Some(Action::TabNext) => self.next_tab(),
-            Some(Action::TabPrev) => self.prev_tab(),
-            Some(Action::TabClose) => self.close_tab(),
-            Some(Action::TabMenu) => self.show_menu(),
+            Some(Action::TabNext) => {
+                self.overlay = None;
+                self.next_tab();
+            }
+            Some(Action::TabPrev) => {
+                self.overlay = None;
+                self.prev_tab();
+            }
+            Some(Action::TabClose) => {
+                self.overlay = None;
+                self.close_tab();
+            }
+            Some(Action::TabMenu) => {
+                self.overlay = None;
+                self.show_menu();
+            }
+            Some(Action::Bundesrecht) => self.open_bundesrecht(),
             _ => {
                 if let Key::Char(c) = key {
                     if c.is_ascii_digit() {
+                        self.overlay = None;
                         self.jump_tab(c.to_digit(10).unwrap_or(0) as usize);
                     }
                 }
@@ -343,8 +406,8 @@ impl App {
         }
     }
 
-    fn pending_load_label(&self, key: Key) -> Option<&'static str> {
-        if self.quit_pending || self.kill_pending || self.prefix || !self.on_menu() {
+    fn pending_load_label(&self, key: Key) -> Option<String> {
+        if self.quit_pending || self.kill_pending || self.prefix || !self.on_menu() || self.overlay.is_some() || self.remove_pending.is_some() {
             return None;
         }
         let confirm = self.keymap.resolve(key, Context::Menu) == Some(Action::Confirm);
@@ -357,13 +420,13 @@ impl App {
                 if query.is_empty() {
                     self.menu.highlighted()
                 } else {
-                    resolve_law(query)
+                    resolve_in(query, &self.menu.core)
                 }
             }
             Mode::Search if !self.menu.search_nav() => None,
             _ => self.menu.highlighted(),
         }?;
-        Some(law.shortcut)
+        Some(law.shortcut.clone())
     }
 
     fn handle_menu(&mut self, key: Key) {
@@ -374,7 +437,7 @@ impl App {
             Mode::Insert => match action {
                 Some(Action::EnterNormal) => self.menu.reset_list(),
                 Some(Action::Confirm) => {
-                    if let Some(law_ref) = self.menu.resolve_insert().copied() {
+                    if let Some(law_ref) = self.menu.resolve_insert() {
                         self.open_tab(law_ref, None);
                     }
                 }
@@ -406,7 +469,7 @@ impl App {
                 Some(Action::MoveDown | Action::MoveRight) => self.menu.move_highlight(1),
                 Some(Action::MoveUp | Action::MoveLeft) => self.menu.move_highlight(-1),
                 Some(Action::Confirm) => {
-                    if let Some(law_ref) = self.menu.highlighted().copied() {
+                    if let Some(law_ref) = self.menu.highlighted().cloned() {
                         self.menu.reset_list();
                         self.open_tab(law_ref, None);
                     }
@@ -419,13 +482,148 @@ impl App {
                 Some(Action::MoveDown | Action::MoveRight) => self.menu.move_highlight(1),
                 Some(Action::MoveUp | Action::MoveLeft) => self.menu.move_highlight(-1),
                 Some(Action::Confirm) => {
-                    if let Some(law_ref) = self.menu.highlighted().copied() {
+                    if let Some(law_ref) = self.menu.highlighted().cloned() {
                         self.open_tab(law_ref, None);
+                    }
+                }
+                Some(Action::RemoveCore) => {
+                    if let Some(law) = self.menu.highlighted().cloned() {
+                        self.remove_pending = Some(law);
                     }
                 }
                 _ => {}
             },
         }
+    }
+
+    fn open_bundesrecht(&mut self) {
+        if !self.ensure_index() {
+            return;
+        }
+        self.overlay = Some(BundesrechtOverlay::new(&self.index));
+    }
+
+    fn ensure_index(&mut self) -> bool {
+        if !self.index.is_empty() && !self.refresh {
+            return true;
+        }
+        let cached = crate::bundesrecht::load_cache(&self.cache_dir);
+        if !cached.is_empty() {
+            self.index = cached;
+            if !self.refresh {
+                return true;
+            }
+        }
+        match crate::bundesrecht::fetch_index(crate::bundesrecht::download_teilliste) {
+            Ok(laws) => {
+                let _ = crate::bundesrecht::save_cache(&self.cache_dir, &laws);
+                self.index = laws;
+                self.load_error = None;
+                true
+            }
+            Err(err) => {
+                if self.index.is_empty() {
+                    self.load_error = Some(err);
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    fn apply_core(&mut self, core: Vec<LawRef>) {
+        self.menu.set_core(core);
+    }
+
+    fn core_shortcuts(&self) -> Vec<String> {
+        self.menu.core.iter().map(|law| law.shortcut.clone()).collect()
+    }
+
+    fn core_changed(&self) -> bool {
+        self.core_shortcuts() != self.launch_core
+    }
+
+    fn session_should_save(&self) -> bool {
+        !self.tabs.is_empty() || self.core_changed()
+    }
+
+    fn handle_overlay(&mut self, key: Key) {
+        let action = self.keymap.resolve(key, Context::Menu);
+        let mut commit = false;
+        let mut close = false;
+        {
+            let Some(overlay) = self.overlay.as_mut() else {
+                return;
+            };
+            if action == Some(Action::MarksList) || key == Key::Tab {
+                overlay.toggle_focus();
+                return;
+            }
+            if overlay.mode == Mode::Search && !overlay.search_nav() {
+                match action {
+                    Some(Action::EnterNormal) => overlay.leave_search(&self.index),
+                    Some(Action::Confirm) => {
+                        if !overlay.lock_search() {
+                            overlay.leave_search(&self.index);
+                        }
+                    }
+                    Some(Action::EnterSearch) => overlay.resume_typing(),
+                    _ => {
+                        if key == Key::Backspace {
+                            overlay.search_backspace(&self.index);
+                        } else if let Some(ch) = printable(key) {
+                            overlay.type_search(ch, &self.index);
+                        }
+                    }
+                }
+                return;
+            }
+            if overlay.mode == Mode::Search {
+                match action {
+                    Some(Action::EnterNormal) => overlay.leave_search(&self.index),
+                    Some(Action::EnterSearch) => overlay.resume_typing(),
+                    Some(Action::MoveDown | Action::MoveRight) => overlay.move_highlight(1),
+                    Some(Action::MoveUp | Action::MoveLeft) => overlay.move_highlight(-1),
+                    Some(Action::Confirm) => commit = true,
+                    _ => {
+                        if key == Key::Char(' ') {
+                            overlay.toggle_mark();
+                        }
+                    }
+                }
+            } else {
+                match action {
+                    Some(Action::EnterNormal) => close = true,
+                    Some(Action::EnterSearch) => overlay.enter_search(&self.index),
+                    Some(Action::MoveDown | Action::MoveRight) => overlay.move_highlight(1),
+                    Some(Action::MoveUp | Action::MoveLeft) => overlay.move_highlight(-1),
+                    Some(Action::Confirm) => commit = true,
+                    _ => {
+                        if key == Key::Char(' ') {
+                            overlay.toggle_mark();
+                        }
+                    }
+                }
+            }
+        }
+        if commit {
+            self.commit_overlay();
+        } else if close {
+            self.overlay = None;
+        }
+    }
+
+    fn commit_overlay(&mut self) {
+        let Some(overlay) = self.overlay.take() else {
+            return;
+        };
+        if overlay.marks.is_empty() {
+            return;
+        }
+        let marked = overlay.marked_list();
+        let next = apply_marks(&self.menu.core, &self.index, &marked);
+        self.apply_core(next);
     }
 
     fn handle_reader(&mut self, key: Key) {
@@ -621,7 +819,7 @@ impl App {
         let area = frame.area();
         let chunks = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
@@ -649,18 +847,52 @@ impl App {
         if self.help {
             self.draw_help(frame, area);
         }
-        if self.quit_pending || self.kill_pending {
+        if self.quit_pending || self.kill_pending || self.remove_pending.is_some() {
             self.draw_confirm(frame, area);
         }
     }
 
     fn draw_cmd(&self, frame: &mut Frame<'_>, area: Rect) {
         let theme = self.theme();
+        let pad = Style::default().bg(theme.background);
+        frame.render_widget(Block::new().style(pad), area);
+        let field_row = if area.height >= 3 {
+            Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area)[1]
+        } else {
+            area
+        };
+        let field = text_rect(field_row);
+        if field.width == 0 {
+            return;
+        }
+        if let Some((text, placeholder, typing)) = self.list_search_field() {
+            let fg = if placeholder {
+                theme.secondary
+            } else {
+                theme.foreground
+            };
+            let style = Style::default().bg(SEARCH_FIELD_BG).fg(fg);
+            frame.render_widget(Block::new().style(style), field);
+            let inner = Block::new()
+                .padding(Padding::horizontal(1))
+                .inner(field);
+            frame.render_widget(Paragraph::new(text.clone()).style(style), inner);
+            if typing && inner.width > 0 {
+                let col = (text.chars().count() as u16).min(inner.width.saturating_sub(1));
+                frame.set_cursor_position(Position::new(inner.x + col, inner.y));
+            }
+            return;
+        }
         let style = Style::default().bg(theme.surface).fg(theme.foreground);
-        frame.render_widget(Block::new().style(style), area);
+        frame.render_widget(Block::new().style(style), field);
         let inner = Block::new()
             .padding(Padding::horizontal(1))
-            .inner(area);
+            .inner(field);
         frame.render_widget(Paragraph::new(self.cmd()).style(style), inner);
         if self.show_cmd_cursor() && inner.width > 0 {
             let col = (self.cmd().chars().count() as u16).min(inner.width.saturating_sub(1));
@@ -668,9 +900,48 @@ impl App {
         }
     }
 
+    fn list_search_field(&self) -> Option<(String, bool, bool)> {
+        if let Some(overlay) = &self.overlay {
+            let searching = overlay.mode == Mode::Search;
+            let typing = searching && !overlay.search_nav();
+            return Some((overlay.search_display(), !searching, typing));
+        }
+        if self.on_menu() {
+            if self.menu.mode == Mode::Insert {
+                return None;
+            }
+            let searching = self.menu.mode == Mode::Search;
+            let typing = searching && !self.menu.search_nav();
+            return Some((
+                search_line(searching, self.menu.search_query()),
+                !searching,
+                typing,
+            ));
+        }
+        let tab = self.current_tab()?;
+        if tab.mode == Mode::Para {
+            return None;
+        }
+        let searching = tab.mode == Mode::Search;
+        let typing = searching && !tab.search_nav();
+        Some((
+            search_line(searching, tab.search_query()),
+            !searching,
+            typing,
+        ))
+    }
+
     fn show_cmd_cursor(&self) -> bool {
-        if self.prefix || self.quit_pending || self.kill_pending || self.help {
+        if self.prefix
+            || self.quit_pending
+            || self.kill_pending
+            || self.help
+            || self.remove_pending.is_some()
+        {
             return false;
+        }
+        if let Some(overlay) = &self.overlay {
+            return overlay.mode == Mode::Search && !overlay.search_nav();
         }
         match self.screen_mode() {
             Mode::Insert | Mode::Para => true,
@@ -682,6 +953,10 @@ impl App {
     fn draw_body(&self, frame: &mut Frame<'_>, area: Rect) {
         let theme = self.theme();
         frame.render_widget(Block::new().style(Style::default().bg(theme.background)), area);
+        if self.overlay.is_some() {
+            self.draw_bundesrecht(frame, area);
+            return;
+        }
         if self.on_menu() {
             self.draw_menu(frame, area);
             return;
@@ -701,24 +976,21 @@ impl App {
     }
 
     fn reader_view_height(&self) -> u16 {
-        self.body_height.saturating_sub(1).max(1)
+        self.body_height.max(1)
     }
 
     fn draw_menu(&self, frame: &mut Frame<'_>, area: Rect) {
-        let inner = area.inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
+        let inner = body_inner(area);
         if inner.width <= 1 {
             return;
         }
+        let theme = self.theme();
         let list_area = Rect {
             x: inner.x,
             y: inner.y,
             width: inner.width.saturating_sub(1),
             height: inner.height,
         };
-        let theme = self.theme();
         let query = self.menu.search_query();
         let items: Vec<ListItem> = self
             .menu
@@ -752,12 +1024,7 @@ impl App {
     }
 
     fn draw_search(&self, frame: &mut Frame<'_>, area: Rect, tab: &ReaderTab) {
-        let inner = Rect {
-            x: area.x + 1,
-            y: area.y + 1,
-            width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(1),
-        };
+        let inner = body_inner(area);
         if inner.width <= 1 {
             return;
         }
@@ -800,12 +1067,7 @@ impl App {
     }
 
     fn draw_reader(&self, frame: &mut Frame<'_>, area: Rect, tab: &ReaderTab) {
-        let inner = Rect {
-            x: area.x + 1,
-            y: area.y + 1,
-            width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(1),
-        };
+        let inner = body_inner(area);
         if inner.width <= 1 || tab.law.norms.is_empty() {
             return;
         }
@@ -863,15 +1125,19 @@ impl App {
 
     fn tab_line(&self) -> Line<'static> {
         let theme = self.theme();
+        let pane = self.overlay.is_some();
         let mut spans = Vec::new();
-        let menu_marker = if self.active < 0 {
+        let menu_current = self.active < 0 && !pane;
+        let menu_marker = if menu_current {
             "*"
+        } else if pane && self.active < 0 {
+            "-"
         } else if self.last < 0 {
             "-"
         } else {
             ""
         };
-        let menu_style = if self.active < 0 {
+        let menu_style = if menu_current {
             Style::default()
                 .fg(theme.surface)
                 .bg(theme.primary)
@@ -883,10 +1149,23 @@ impl App {
                 .add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(format!(" 0:MENU{menu_marker} "), menu_style));
+        if pane {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                " BUND* ",
+                Style::default()
+                    .fg(theme.surface)
+                    .bg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         for (index, tab) in self.tabs.iter().enumerate() {
             spans.push(Span::raw(" "));
-            let marker = if index as i32 == self.active {
+            let current = !pane && index as i32 == self.active;
+            let marker = if current {
                 "*"
+            } else if pane && index as i32 == self.active {
+                "-"
             } else if index as i32 == self.last {
                 "-"
             } else {
@@ -897,7 +1176,7 @@ impl App {
                 index + 1,
                 shortcut = tab.shortcut()
             );
-            let style = if index as i32 == self.active {
+            let style = if current {
                 Style::default()
                     .fg(theme.surface)
                     .bg(theme.primary)
@@ -938,6 +1217,15 @@ impl App {
             .padding(Padding::horizontal(1))
             .inner(area);
         let mode = self.mode_label();
+        if mode.is_empty() {
+            frame.render_widget(
+                Paragraph::new(pos)
+                    .style(pos_style)
+                    .alignment(Alignment::Right),
+                inner,
+            );
+            return;
+        }
         let badge = format!(" {} ", center_pad(mode, 6));
         let mode_style = self.mode_badge_style();
         let mode_width = badge.chars().count() as u16;
@@ -947,12 +1235,46 @@ impl App {
         ])
         .split(inner);
         frame.render_widget(Paragraph::new(badge).style(mode_style), chunks[0]);
-        frame.render_widget(
-            Paragraph::new(pos)
-                .style(pos_style)
-                .alignment(Alignment::Right),
-            chunks[1],
-        );
+        if let Some(hint) = self.pane_hint() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {hint}"),
+                    Style::default().fg(theme.secondary).bg(theme.surface),
+                ))),
+                chunks[1],
+            );
+        } else {
+            frame.render_widget(
+                Paragraph::new(pos)
+                    .style(pos_style)
+                    .alignment(Alignment::Right),
+                chunks[1],
+            );
+        }
+    }
+
+    fn pane_hint(&self) -> Option<String> {
+        if self.help
+            || self.prefix
+            || self.quit_pending
+            || self.kill_pending
+            || self.remove_pending.is_some()
+            || self.load_error.is_some()
+        {
+            return None;
+        }
+        if self.overlay.is_some() {
+            let tab = pretty_binding(self.keymap.binding("marks_list"));
+            return Some(format!(
+                "<{tab}> Auswahl  <Space> markieren  <Enter> übernehmen  <Esc> schließen"
+            ));
+        }
+        if self.on_menu() {
+            let prefix = pretty_binding(self.keymap.binding("tab_prefix"));
+            let bundes = pretty_binding(self.keymap.binding("tab_bundesrecht"));
+            return Some(format!("{prefix} {bundes}   Bundesrecht durchsuchen"));
+        }
+        None
     }
 
     fn draw_help(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -983,6 +1305,126 @@ impl App {
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme.surface).fg(theme.foreground)),
             inner,
+        );
+    }
+
+    fn draw_bundesrecht(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(overlay) = &self.overlay else {
+            return;
+        };
+        let inner = body_inner(area);
+        if inner.width <= 1 {
+            return;
+        }
+        let theme = self.theme();
+        let searching = overlay.mode == Mode::Search;
+        let query = overlay.search_query();
+        let list_width = inner.width.saturating_sub(1);
+        let title_width = (list_width as usize).saturating_sub(title_indent());
+        let marked = overlay.marked_laws(&self.index);
+        let mark_items = if marked.is_empty() {
+            vec![ListItem::new(Line::from(Span::styled(
+                "keine Markierung",
+                Style::default().fg(theme.secondary),
+            )))]
+        } else {
+            bund_law_items(
+                &marked,
+                overlay,
+                &self.menu.core,
+                "",
+                false,
+                title_width,
+                &theme,
+            )
+        };
+        let catalog_items = if overlay.visible.is_empty() {
+            vec![ListItem::new(Line::from(Span::styled(
+                "no matches",
+                Style::default().fg(theme.secondary),
+            )))]
+        } else {
+            bund_law_items(
+                &overlay.visible,
+                overlay,
+                &self.menu.core,
+                query,
+                searching,
+                title_width,
+                &theme,
+            )
+        };
+        let catalog_area = if !overlay.show_marks_panel() {
+            inner
+        } else {
+            let needed = mark_items
+                .iter()
+                .map(ListItem::height)
+                .sum::<usize>()
+                .max(1) as u16;
+            let catalog_min = 3u16;
+            let heading_h = 1u16;
+            let sep_h = 1u16;
+            let budget = inner
+                .height
+                .saturating_sub(heading_h + sep_h + catalog_min);
+            let marks_h = needed.min(budget.max(1));
+            let chunks = Layout::vertical([
+                Constraint::Length(heading_h),
+                Constraint::Length(marks_h),
+                Constraint::Length(sep_h),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "Auswahl",
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )))
+                .style(Style::default().bg(theme.surface)),
+                Rect {
+                    x: chunks[0].x,
+                    y: chunks[0].y,
+                    width: list_width,
+                    height: chunks[0].height,
+                },
+            );
+            render_bund_list(
+                frame,
+                chunks[1],
+                mark_items,
+                overlay.in_marks().then_some(overlay.mark_highlight),
+                &theme,
+            );
+            let sep = "─".repeat(list_width.max(1) as usize);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    sep,
+                    Style::default().fg(theme.border),
+                ))),
+                Rect {
+                    x: chunks[2].x,
+                    y: chunks[2].y,
+                    width: list_width,
+                    height: chunks[2].height,
+                },
+            );
+            chunks[3]
+        };
+        let catalog_select = if overlay.in_marks() || overlay.visible.is_empty() {
+            None
+        } else {
+            Some(overlay.highlight)
+        };
+        render_bund_list(frame, catalog_area, catalog_items, catalog_select, &theme);
+        draw_scrollbar(
+            frame,
+            catalog_area,
+            overlay.highlight,
+            overlay.visible.len().max(1),
+            &theme,
         );
     }
 
@@ -1027,6 +1469,15 @@ impl App {
     }
 
     fn confirm_copy(&self) -> (&'static str, Vec<&'static str>) {
+        if self.remove_pending.is_some() {
+            return (
+                " CORE ",
+                vec![
+                    "Remove this law from CORE.",
+                    "Open tabs stay until you close them.",
+                ],
+            );
+        }
         if self.kill_pending {
             if self.session_id.is_some() {
                 (
@@ -1045,7 +1496,7 @@ impl App {
                     ],
                 )
             }
-        } else if self.tabs.is_empty() {
+        } else if self.tabs.is_empty() && !self.core_changed() {
             (
                 " Quit ",
                 vec![
@@ -1107,8 +1558,10 @@ impl App {
             row(key("enter_search"), "search (Enter then j/k)"),
             row("0-9".into(), "type a citation"),
             row(key("enter_para"), "PARA / MENU shortcut"),
-            row(key("confirm"), "confirm"),
-            row(key("enter_normal"), "cancel / NORMAL"),
+            row(
+                format!("{} {}", key("confirm"), key("enter_normal")),
+                "confirm / cancel",
+            ),
             heading("Tabs"),
             row(
                 format!("{} {}/{}", key("tab_prefix"), key("tab_next"), key("tab_prev")),
@@ -1123,16 +1576,21 @@ impl App {
                 format!("{} {}", key("tab_prefix"), key("tab_close")),
                 "close tab",
             ),
+            row(
+                format!("{} {}", key("tab_prefix"), key("tab_bundesrecht")),
+                "Bundesrecht; Tab marked",
+            ),
+            row(key("core_remove"), "remove from CORE"),
             heading("App"),
             row(key("quit"), "save workspace"),
-            row("Ctrl-c".into(), "kill session"),
+            row("Ctrl-c".into(), "kill without saving"),
             row(key("help"), "this window"),
         ]
     }
 
     fn mode_badge_style(&self) -> Style {
         let theme = self.theme();
-        if self.kill_pending || self.quit_pending {
+        if self.kill_pending || self.quit_pending || self.remove_pending.is_some() {
             return Style::default()
                 .fg(theme.surface)
                 .bg(theme.error)
@@ -1161,7 +1619,9 @@ impl App {
     }
 
     fn screen_mode(&self) -> Mode {
-        if self.on_menu() {
+        if let Some(overlay) = &self.overlay {
+            overlay.mode
+        } else if self.on_menu() {
             self.menu.mode
         } else {
             self.current_tab()
@@ -1175,11 +1635,18 @@ impl App {
     }
 
     pub fn mode_label(&self) -> &'static str {
+        if self.remove_pending.is_some() {
+            return "CORE";
+        }
         if self.kill_pending {
             return "KILL";
         }
         if self.quit_pending {
-            return if self.tabs.is_empty() { "QUIT" } else { "SAVE" };
+            return if self.session_should_save() {
+                "SAVE"
+            } else {
+                "QUIT"
+            };
         }
         if self.help {
             return "HELP";
@@ -1196,6 +1663,13 @@ impl App {
     }
 
     pub fn cmd(&self) -> &str {
+        if let Some(overlay) = &self.overlay {
+            return overlay
+                .prompt
+                .as_ref()
+                .map(|p| p.query.as_str())
+                .unwrap_or("");
+        }
         if self.on_menu() {
             self.menu
                 .prompt
@@ -1237,8 +1711,8 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub fn picker_slugs(&self) -> Vec<&'static str> {
-        self.menu.filtered.iter().map(|law| law.slug).collect()
+    pub fn picker_slugs(&self) -> Vec<&str> {
+        self.menu.filtered.iter().map(|law| law.slug.as_str()).collect()
     }
 
     pub fn picker_highlight(&self) -> usize {
@@ -1286,16 +1760,21 @@ impl App {
     }
 
     fn persist_quit(&mut self) {
-        if !self.tabs.is_empty() {
+        if self.session_should_save() {
             let tabs = self
                 .tabs
                 .iter()
                 .map(|tab| WorkspaceTab {
-                    slug: tab.law_ref.slug.to_string(),
+                    slug: tab.law_ref.slug.clone(),
                     citation: tab.current_citation().unwrap_or("").to_string(),
                 })
                 .collect();
-            self.session_id = Some(self.workspaces.save(self.session_id, self.active, tabs));
+            self.session_id = Some(self.workspaces.save(
+                self.session_id,
+                self.active,
+                tabs,
+                Some(self.core_shortcuts()),
+            ));
         }
         self.should_quit = true;
     }
@@ -1321,6 +1800,24 @@ impl App {
 
     pub fn view_start(&self) -> usize {
         self.current_tab().map(|tab| tab.view_start).unwrap_or(0)
+    }
+}
+
+fn body_inner(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    }
+}
+
+fn text_rect(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(3),
+        height: area.height,
     }
 }
 
@@ -1375,7 +1872,7 @@ fn menu_row(law: &LawRef, query: &str, searching: bool, theme: &Theme) -> Line<'
         for span in &mut spans {
             span.style = span.style.add_modifier(Modifier::BOLD);
         }
-        spans.extend(styled_to_line(&highlight_text(law.title, query), theme).spans);
+        spans.extend(styled_to_line(&highlight_text(&law.title, query), theme).spans);
         Line::from(spans)
     } else {
         Line::from(vec![
@@ -1383,6 +1880,141 @@ fn menu_row(law: &LawRef, query: &str, searching: bool, theme: &Theme) -> Line<'
             Span::raw(law.title.to_string()),
         ])
     }
+}
+
+fn bund_mark<'a>(overlay: &BundesrechtOverlay, law: &LawRef, core: &[LawRef]) -> &'a str {
+    let on_core = core
+        .iter()
+        .any(|item| item.shortcut.eq_ignore_ascii_case(&law.shortcut));
+    if overlay.is_marked(law) {
+        if on_core {
+            "-"
+        } else {
+            "+"
+        }
+    } else if on_core {
+        "*"
+    } else {
+        " "
+    }
+}
+
+fn bund_law_items(
+    laws: &[LawRef],
+    overlay: &BundesrechtOverlay,
+    core: &[LawRef],
+    query: &str,
+    searching: bool,
+    title_width: usize,
+    theme: &Theme,
+) -> Vec<ListItem<'static>> {
+    laws.iter()
+        .map(|law| {
+            ListItem::new(pane_rows(
+                bund_mark(overlay, law, core),
+                law,
+                query,
+                searching,
+                title_width,
+                theme,
+            ))
+        })
+        .collect()
+}
+
+fn render_bund_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    items: Vec<ListItem<'static>>,
+    selected: Option<usize>,
+    theme: &Theme,
+) {
+    let list_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+    };
+    let mut state = ListState::default();
+    if let Some(index) = selected {
+        state.select(Some(index));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().bg(theme.background).fg(theme.foreground))
+            .highlight_style(Style::default().bg(theme.highlight_bg).fg(theme.foreground))
+            .highlight_symbol(""),
+        list_area,
+        &mut state,
+    );
+}
+
+fn pane_rows(
+    mark: &str,
+    law: &LawRef,
+    query: &str,
+    searching: bool,
+    title_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let slug_lines = wrap_slug(&law.shortcut, IDENTIFIER_WIDTH);
+    let title_lines = wrap_title(&law.title, title_width.max(1));
+    let rows = slug_lines.len().max(title_lines.len());
+    let mut lines = Vec::with_capacity(rows);
+    for i in 0..rows {
+        let mut spans = if i == 0 {
+            vec![Span::styled(
+                format!("{mark} "),
+                Style::default().fg(theme.foreground),
+            )]
+        } else {
+            vec![Span::raw("  ")]
+        };
+        let slug_piece = slug_lines.get(i).map(String::as_str).unwrap_or("");
+        spans.extend(padded_ident_spans(slug_piece, query, searching, theme));
+        spans.push(Span::raw(" ".repeat(slug_gap())));
+        if let Some(piece) = title_lines.get(i) {
+            if searching {
+                spans.extend(styled_to_line(&highlight_text(piece, query), theme).spans);
+            } else {
+                spans.push(Span::styled(
+                    piece.clone(),
+                    Style::default().fg(theme.foreground),
+                ));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn padded_ident_spans(
+    piece: &str,
+    query: &str,
+    searching: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let mut spans = if piece.is_empty() {
+        Vec::new()
+    } else if searching {
+        let mut highlighted = styled_to_line(&highlight_text(piece, query), theme).spans;
+        for span in &mut highlighted {
+            span.style = span.style.add_modifier(Modifier::BOLD);
+        }
+        highlighted
+    } else {
+        vec![Span::styled(
+            piece.to_string(),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        )]
+    };
+    let pad = IDENTIFIER_WIDTH.saturating_sub(piece.chars().count());
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    spans
 }
 
 fn styled_to_line(text: &crate::search::StyledText, theme: &Theme) -> Line<'static> {
@@ -1706,11 +2338,14 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::LAWS;
+    use crate::catalog::{default_core, LawRef};
     use crate::config::Config;
     use crate::fetch::load_law;
     use crate::session::{WorkspaceStore, WorkspaceTab};
-    use super::theme::{ACCENT, ERROR, FOREGROUND, PRIMARY, SEARCH_FG, SECONDARY, SURFACE};
+    use super::theme::{
+        ACCENT, BACKGROUND, ERROR, FOREGROUND, PRIMARY, SEARCH_FG, SEARCH_FIELD_BG, SECONDARY,
+        SURFACE,
+    };
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
@@ -1802,6 +2437,22 @@ mod tests {
         assert!(
             joined.contains("this window"),
             "help key was clipped: {joined}"
+        );
+        assert!(
+            joined.contains("Bundesrecht"),
+            "missing Bundesrecht overlay: {joined}"
+        );
+        let bundes = joined
+            .lines()
+            .find(|line| line.contains("Bundesrecht"))
+            .expect("Bundesrecht row");
+        assert!(
+            !bundes.contains("CORE"),
+            "Bundesrecht and CORE remove must be separate rows: {bundes}"
+        );
+        assert!(
+            joined.lines().any(|line| line.contains('d') && line.contains("CORE")),
+            "missing CORE remove: {joined}"
         );
     }
 
@@ -2232,7 +2883,7 @@ mod tests {
         assert_eq!(app.mode_label(), "NORMAL");
         assert_eq!(
             app.picker_slugs(),
-            LAWS.iter().map(|law| law.slug).collect::<Vec<_>>()
+            default_core().iter().map(|law| law.slug.as_str()).collect::<Vec<_>>()
         );
         assert_eq!(app.cmd(), "");
     }
@@ -2250,7 +2901,7 @@ mod tests {
         assert_eq!(app.mode_label(), "NORMAL");
         assert_eq!(
             app.picker_slugs(),
-            LAWS.iter().map(|law| law.slug).collect::<Vec<_>>()
+            default_core().iter().map(|law| law.slug.as_str()).collect::<Vec<_>>()
         );
     }
 
@@ -2530,6 +3181,10 @@ mod tests {
             workspace.tabs[0].citation
         );
         assert_eq!(store.mru_id(), Some(1));
+        assert_eq!(
+            workspace.core.as_ref().map(|order| order[0].as_str()),
+            Some("BGB")
+        );
     }
 
     #[test]
@@ -2560,7 +3215,7 @@ mod tests {
 
     fn seed_workspace(dir: &Path, active: i32, tabs: Vec<WorkspaceTab>) -> u32 {
         let mut store = WorkspaceStore::open(dir.join("sessions.json"));
-        store.save(None, active, tabs)
+        store.save(None, active, tabs, None)
     }
 
     fn start_multi(dir: &Path, start: Start) -> Result<App, String> {
@@ -2886,7 +3541,7 @@ mod tests {
     fn menu_shortcut_column_is_ten_wide() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
-        let line = render_line(&mut app, 80, 16, 3);
+        let line = render_line(&mut app, 80, 16, 4);
         let bgb = line.find("BGB").expect("BGB row");
         let title = line.find("Bürgerliches").expect("title");
         assert_eq!(title - bgb, 10);
@@ -3089,7 +3744,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer();
         let mut found = false;
-        for y in 2..17 {
+        for y in 4..17 {
             for x in 0..76 {
                 if buffer[(x, y)].symbol() == "K"
                     && buffer[(x + 1, y)].symbol() == "a"
@@ -3265,5 +3920,465 @@ mod tests {
         assert!(app.on_menu());
         assert_eq!(app.tab_count(), 0);
         assert!(app.pos_label().contains("download failed"));
+    }
+
+    fn sample_index() -> Vec<LawRef> {
+        vec![
+            LawRef::new("BGB", "bgb", "Bürgerliches Gesetzbuch", &[]),
+            LawRef::new("GG", "gg", "Grundgesetz für die Bundesrepublik Deutschland", &[]),
+            LawRef::new("StVG", "stvg", "Straßenverkehrsgesetz", &[]),
+        ]
+    }
+
+    fn conf_text(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("normen.conf")).unwrap_or_default()
+    }
+
+    fn assert_no_core_section(dir: &Path) {
+        let text = conf_text(dir);
+        assert!(
+            !text.contains("[core]\norder"),
+            "TUI must not write [core]: {text}"
+        );
+    }
+
+    fn add_stvg_to_core(app: &mut App) {
+        press(app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(app, &[Key::Char('j'), Key::Char('j'), Key::Char(' '), Key::Enter]);
+    }
+
+    #[test]
+    fn prefix_a_opens_bundesrecht_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        assert!(app.overlay.is_some());
+        assert_eq!(app.mode_label(), "NORMAL");
+        let status = render_line(&mut app, 80, 24, 23);
+        assert!(status.contains("NORMAL"), "{status}");
+        assert!(!status.contains("BUND"), "{status}");
+        assert!(status.contains("<Space> markieren"), "{status}");
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("<Space> markieren"), "{joined}");
+        assert!(joined.contains("<Enter> übernehmen"), "{joined}");
+        assert!(joined.contains("<Esc> schließen"), "{joined}");
+        assert!(app.tab_line_plain().contains("BUND*"));
+        assert!(app.tab_line_plain().contains("0:MENU-"));
+        assert_eq!(
+            app.overlay
+                .as_ref()
+                .unwrap()
+                .visible
+                .iter()
+                .map(|law| law.shortcut.as_str())
+                .collect::<Vec<_>>(),
+            vec!["BGB", "GG", "StVG"]
+        );
+    }
+
+    #[test]
+    fn overlay_slash_filters_and_keeps_query_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a'), Key::Slash]);
+        press(
+            &mut app,
+            &[
+                Key::Char('s'),
+                Key::Char('t'),
+                Key::Char('r'),
+                Key::Char('a'),
+                Key::Char('ß'),
+            ],
+        );
+        let overlay = app.overlay.as_ref().unwrap();
+        assert_eq!(overlay.search_display(), "/straß");
+        assert_eq!(overlay.visible.len(), 1);
+        assert_eq!(overlay.visible[0].shortcut, "StVG");
+        assert_eq!(app.cmd(), "straß");
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("/straß"), "{joined}");
+        assert!(!joined.contains("f then letter"), "{joined}");
+        assert!(
+            !joined.contains('┌'),
+            "Bundesrecht is a pane, not a boxed overlay: {joined}"
+        );
+        let cmd = render_line(&mut app, 80, 24, 2);
+        assert!(cmd.contains("/straß"), "{cmd}");
+        assert!(!cmd.contains("Suche"), "{cmd}");
+        assert_eq!(app.mode_label(), "SEARCH");
+    }
+
+    #[test]
+    fn bund_marks_stay_on_top_and_tab_reviews_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Char('j'), Key::Char(' ')]);
+        let overlay = app.overlay.as_ref().unwrap();
+        assert_eq!(overlay.marked_list(), vec!["stvg"]);
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("Auswahl"), "{joined}");
+        let stvg = joined.find("StVG").expect("marked StVG");
+        let bgb = joined.find("BGB").expect("catalog BGB");
+        assert!(stvg < bgb, "marked list sits above catalog: {joined}");
+        assert!(joined.contains('─'), "separator between marks and catalog: {joined}");
+        press(&mut app, &[Key::Slash, Key::Char('g'), Key::Char('g')]);
+        let filtered = render_joined(&mut app, 80, 24);
+        assert!(filtered.contains("StVG"), "marks ignore search: {filtered}");
+        assert!(filtered.contains("GG"), "{filtered}");
+        app.handle_key(Key::Tab);
+        assert!(app.overlay.as_ref().unwrap().in_marks());
+        app.handle_key(Key::Char(' '));
+        assert!(app.overlay.as_ref().unwrap().marks.is_empty());
+        assert!(!app.overlay.as_ref().unwrap().in_marks());
+        let status = render_line(&mut app, 80, 24, 23);
+        assert!(status.contains("Auswahl"), "{status}");
+        assert!(status.contains("Tab"), "{status}");
+    }
+
+    #[test]
+    fn bund_tab_opens_auswahl_even_without_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let before = render_joined(&mut app, 80, 24);
+        assert!(!before.contains("keine Markierung"), "{before}");
+        app.handle_key(Key::Tab);
+        let after = render_joined(&mut app, 80, 24);
+        assert!(after.contains("Auswahl"), "{after}");
+        assert!(after.contains("keine Markierung"), "{after}");
+        app.handle_key(Key::Tab);
+        let closed = render_joined(&mut app, 80, 24);
+        assert!(!closed.contains("keine Markierung"), "{closed}");
+    }
+
+    #[test]
+    fn menu_and_bund_share_suche_field_on_cmd_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        let menu_cmd = render_line(&mut app, 80, 16, 2);
+        assert!(menu_cmd.contains("/ Suche"), "{menu_cmd}");
+        let buffer = render_buffer(&mut app, 80, 16);
+        assert_eq!(buffer[(1, 2)].bg, SEARCH_FIELD_BG);
+
+        app.handle_key(Key::Slash);
+        press(&mut app, &[Key::Char('g'), Key::Char('g')]);
+        let searching = render_line(&mut app, 80, 16, 2);
+        assert!(searching.contains("/gg"), "{searching}");
+        assert!(!searching.contains("Suche"), "{searching}");
+        app.handle_key(Key::Esc);
+
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let bund_cmd = render_line(&mut app, 80, 24, 2);
+        assert!(bund_cmd.contains("/ Suche"), "{bund_cmd}");
+        let bund_buf = render_buffer(&mut app, 80, 24);
+        assert_eq!(bund_buf[(1, 2)].bg, SEARCH_FIELD_BG);
+        app.handle_key(Key::Esc);
+
+        let mut reader = sample_app(dir.path(), Some("bgb"), None);
+        let reader_cmd = render_line(&mut reader, 80, 16, 2);
+        assert!(reader_cmd.contains("/ Suche"), "{reader_cmd}");
+        let reader_buf = render_buffer(&mut reader, 80, 16);
+        assert_eq!(reader_buf[(1, 2)].bg, SEARCH_FIELD_BG);
+        reader.handle_key(Key::Slash);
+        press(&mut reader, &[Key::Char('k'), Key::Char('a')]);
+        let reader_search = render_line(&mut reader, 80, 16, 2);
+        assert!(reader_search.contains("/ka"), "{reader_search}");
+        assert!(!reader_search.contains("Suche"), "{reader_search}");
+    }
+
+    #[test]
+    fn overlay_rows_match_core_layout_without_green() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let buffer = render_buffer(&mut app, 80, 24);
+        let joined = render_joined(&mut app, 80, 24);
+        let line = joined
+            .lines()
+            .find(|row| row.contains("StVG") && row.contains("Straßenverkehrsgesetz"))
+            .expect("StVG overlay row");
+        let shortcut = line.find("StVG").unwrap();
+        let title = line.find("Straßenverkehrsgesetz").unwrap();
+        assert_eq!(title - shortcut, IDENTIFIER_WIDTH + slug_gap());
+        assert_text_fg(&buffer, "StVG", FOREGROUND);
+        for y in 0..24 {
+            for x in 0..80 {
+                let cell = &buffer[(x, y)];
+                if cell.symbol() == "S"
+                    && x + 3 < 80
+                    && buffer[(x + 1, y)].symbol() == "t"
+                    && buffer[(x + 2, y)].symbol() == "V"
+                    && buffer[(x + 3, y)].symbol() == "G"
+                {
+                    assert_ne!(cell.fg, PRIMARY, "overlay shortcut must not be green");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bundesrecht_pane_wraps_full_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let joined = render_joined(&mut app, 40, 16);
+        assert!(joined.contains("GG"), "{joined}");
+        assert!(joined.contains("Grundgesetz"), "{joined}");
+        assert!(joined.contains("Bundesrepublik"), "{joined}");
+        assert!(joined.contains("Deutschland"), "{joined}");
+        let gg_line = joined
+            .lines()
+            .find(|row| row.contains("GG") && row.contains("Grundgesetz"))
+            .expect("GG first row");
+        assert!(
+            !gg_line.contains("Deutschland"),
+            "long title should wrap: {gg_line}"
+        );
+    }
+
+    #[test]
+    fn bundesrecht_pane_wraps_long_slug_beside_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = vec![LawRef::new(
+            "BAAZustVExtraLong",
+            "baazustvextralong",
+            "Official Full Name Of The Statute",
+            &[],
+        )];
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let joined = render_joined(&mut app, 80, 16);
+        let first = joined
+            .lines()
+            .find(|row| row.contains("BAAZustV"))
+            .expect("slug first chunk");
+        let second = joined
+            .lines()
+            .find(|row| row.contains("ExtraLong"))
+            .expect("slug second chunk");
+        assert!(
+            !first.contains("ExtraLong"),
+            "slug should wrap before capitals: {first}"
+        );
+        let slug_at = first.find("BAAZustV").unwrap();
+        let title_at = first.find("Official").expect("title beside slug");
+        assert_eq!(title_at - slug_at, IDENTIFIER_WIDTH + slug_gap(), "{first}");
+        assert_eq!(second.find("ExtraLong").unwrap(), slug_at, "{second}");
+    }
+
+    #[test]
+    fn prefix_m_closes_bundesrecht_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        assert!(app.overlay.is_some());
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('m')]);
+        assert!(app.overlay.is_none());
+        assert!(app.on_menu());
+        assert!(app.tab_line_plain().contains("0:MENU*"));
+    }
+
+    #[test]
+    fn overlay_space_enter_appends_without_writing_conf() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        add_stvg_to_core(&mut app);
+        assert!(app.overlay.is_none());
+        assert!(app.menu.core.iter().any(|law| law.shortcut == "StVG"));
+        assert_eq!(app.menu.core.last().unwrap().shortcut, "StVG");
+        assert_no_core_section(dir.path());
+    }
+
+    #[test]
+    fn overlay_esc_does_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Char('j'), Key::Char(' ')]);
+        app.handle_key(Key::Esc);
+        assert!(app.overlay.is_none());
+        assert!(!app.menu.core.iter().any(|law| law.shortcut == "StVG"));
+        assert_no_core_section(dir.path());
+    }
+
+    #[test]
+    fn overlay_mark_core_law_removes_on_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Char(' '), Key::Enter]);
+        assert!(!app.menu.core.iter().any(|law| law.shortcut == "GG"));
+        assert_no_core_section(dir.path());
+    }
+
+    #[test]
+    fn ctrl_q_persists_session_core_not_conf() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::bundesrecht::save_cache(dir.path(), &sample_index()).unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        add_stvg_to_core(&mut app);
+        app.handle_key(Key::Ctrl('q'));
+        assert_eq!(app.mode_label(), "SAVE");
+        app.handle_key(Key::Char('y'));
+        assert_no_core_section(dir.path());
+        let store = WorkspaceStore::open(dir.path().join("sessions.json"));
+        let core = store.get(1).unwrap().core.clone().expect("session CORE");
+        assert!(core.iter().any(|name| name == "StVG"), "{core:?}");
+
+        let fresh = app_at(dir.path(), None);
+        assert!(!fresh.menu.core.iter().any(|law| law.shortcut == "StVG"));
+
+        let attached = App::try_start(
+            Config::new(dir.path().join("normen.conf")),
+            Box::new(|_, _| Err("unused".into())),
+            Start::Attach { id: Some(1) },
+            false,
+        )
+        .unwrap();
+        assert!(attached.menu.core.iter().any(|law| law.shortcut == "StVG"));
+    }
+
+    #[test]
+    fn ctrl_c_discards_session_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        add_stvg_to_core(&mut app);
+        app.handle_key(Key::Ctrl('c'));
+        app.handle_key(Key::Char('y'));
+        assert_no_core_section(dir.path());
+        assert!(WorkspaceStore::open(dir.path().join("sessions.json"))
+            .list()
+            .is_empty());
+        let fresh = app_at(dir.path(), None);
+        assert!(!fresh.menu.core.iter().any(|law| law.shortcut == "StVG"));
+    }
+
+    #[test]
+    fn menu_shows_bundesrecht_hint_below_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        let joined = render_joined(&mut app, 80, 16);
+        let hint = joined
+            .lines()
+            .find(|line| line.contains("Bundesrecht durchsuchen"))
+            .expect("Bundesrecht hint");
+        let bgb = joined
+            .lines()
+            .find(|line| line.contains("BGB") && line.contains("Bürgerliches"))
+            .expect("CORE row");
+        let hint_at = joined.find(hint).unwrap();
+        let bgb_at = joined.find(bgb).unwrap();
+        assert!(hint_at > bgb_at, "hint belongs under CORE: {joined}");
+        assert!(hint.contains("Ctrl-n"), "{hint}");
+        assert!(!joined.contains("search the entire catalog"), "{joined}");
+        let status = render_line(&mut app, 80, 16, 15);
+        assert!(
+            status.contains("Bundesrecht durchsuchen"),
+            "hint sits on the status row: {status}"
+        );
+    }
+
+    #[test]
+    fn search_field_has_equal_vertical_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        let buffer = render_buffer(&mut app, 80, 16);
+        assert_eq!(buffer[(0, 2)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 1)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(buffer[(77, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(buffer[(78, 2)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 3)].bg, BACKGROUND);
+        let first = render_line(&mut app, 80, 16, 4);
+        assert!(first.contains("BGB"), "one pad row under the field: {first}");
+        let gap = render_line(&mut app, 80, 16, 3);
+        assert!(!gap.contains("BGB"), "{gap}");
+
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        let bund = render_buffer(&mut app, 80, 24);
+        assert_eq!(bund[(0, 2)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 1)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(bund[(77, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(bund[(78, 2)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 3)].bg, BACKGROUND);
+        let bund_first = render_line(&mut app, 80, 24, 4);
+        assert!(bund_first.contains("BGB"), "{bund_first}");
+    }
+
+    #[test]
+    fn bund_modes_normal_and_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        assert_eq!(app.mode_label(), "NORMAL");
+        app.handle_key(Key::Slash);
+        assert_eq!(app.mode_label(), "SEARCH");
+        app.handle_key(Key::Esc);
+        assert_eq!(app.mode_label(), "NORMAL");
+        assert!(app.overlay.is_some());
+        app.handle_key(Key::Char('i'));
+        assert_eq!(app.mode_label(), "NORMAL");
+        assert!(app.overlay.is_some());
+        let status = render_line(&mut app, 80, 24, 23);
+        assert!(status.contains("NORMAL"), "{status}");
+        assert!(!status.contains("PARA"), "{status}");
+        assert!(!status.contains("BUND"), "{status}");
+        assert!(status.contains("<Space> markieren"), "{status}");
+    }
+
+    #[test]
+    fn menu_d_confirms_remove_and_keeps_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = multi_app(dir.path());
+        app.handle_key(Key::Enter);
+        assert_eq!(app.tab_shortcuts(), vec!["BGB"]);
+        app.handle_key(Key::Ctrl('n'));
+        app.handle_key(Key::Char('m'));
+        app.handle_key(Key::Char('d'));
+        assert_eq!(app.mode_label(), "CORE");
+        app.handle_key(Key::Esc);
+        assert!(app.menu.core.iter().any(|law| law.shortcut == "BGB"));
+        app.handle_key(Key::Char('d'));
+        app.handle_key(Key::Char('y'));
+        assert!(!app.menu.core.iter().any(|law| law.shortcut == "BGB"));
+        assert_eq!(app.tab_shortcuts(), vec!["BGB"]);
+    }
+
+    #[test]
+    fn conf_stvg_resolves_from_cached_index() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::bundesrecht::save_cache(dir.path(), &sample_index()).unwrap();
+        std::fs::write(
+            dir.path().join("normen.conf"),
+            "[core]\norder = BGB, StVG\n",
+        )
+        .unwrap();
+        let app = app_at(dir.path(), None);
+        assert_eq!(
+            app.menu
+                .core
+                .iter()
+                .map(|law| law.shortcut.as_str())
+                .collect::<Vec<_>>(),
+            vec!["BGB", "StVG"]
+        );
     }
 }

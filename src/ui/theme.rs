@@ -10,6 +10,7 @@ pub const SURFACE: Color = Color::Rgb(0x13, 0x1a, 0x21);
 pub const BORDER: Color = Color::Rgb(0x40, 0x47, 0x4e);
 pub const HIGHLIGHT_BG: Color = Color::Rgb(0x2a, 0x31, 0x38);
 pub const SEARCH_FG: Color = Color::Rgb(0x10, 0x17, 0x1e);
+pub const SEARCH_FIELD_BG: Color = Color::DarkGray;
 
 pub fn parse_hex(value: &str) -> Option<Color> {
     let value = value.trim();

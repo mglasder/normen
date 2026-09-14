@@ -1,3 +1,4 @@
+pub mod bundesrecht;
 pub mod catalog;
 pub mod query;
 pub mod citation;

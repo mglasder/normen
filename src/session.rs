@@ -16,6 +16,8 @@ pub struct Workspace {
     pub last_opened: u64,
     pub active: i32,
     pub tabs: Vec<WorkspaceTab>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +55,7 @@ impl WorkspaceStore {
         session_id: Option<u32>,
         active: i32,
         tabs: Vec<WorkspaceTab>,
+        core: Option<Vec<String>>,
     ) -> u32 {
         let now = unix_now();
         let id = match session_id {
@@ -61,6 +64,9 @@ impl WorkspaceStore {
                     existing.active = active;
                     existing.tabs = tabs;
                     existing.last_opened = now;
+                    if core.is_some() {
+                        existing.core = core;
+                    }
                 }
                 id
             }
@@ -72,6 +78,7 @@ impl WorkspaceStore {
                     last_opened: now,
                     active,
                     tabs,
+                    core,
                 });
                 id
             }
@@ -170,12 +177,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.json");
         let mut store = WorkspaceStore::open(&path);
-        let id = store.save(None, 0, vec![tab("bgb", "§ 433")]);
+        let id = store.save(None, 0, vec![tab("bgb", "§ 433")], None);
         assert_eq!(id, 1);
         let reopened = WorkspaceStore::open(&path);
         let workspace = reopened.get(1).expect("saved workspace");
         assert_eq!(workspace.tabs, vec![tab("bgb", "§ 433")]);
         assert_eq!(workspace.active, 0);
+        assert!(workspace.core.is_none());
         assert_eq!(reopened.mru_id(), Some(1));
     }
 
@@ -184,9 +192,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.json");
         let mut store = WorkspaceStore::open(&path);
-        assert_eq!(store.save(None, 0, vec![tab("bgb", "§ 1")]), 1);
+        assert_eq!(store.save(None, 0, vec![tab("bgb", "§ 1")], None), 1);
         assert!(store.remove(1));
-        assert_eq!(store.save(None, 0, vec![tab("gg", "Art. 1")]), 2);
+        assert_eq!(store.save(None, 0, vec![tab("gg", "Art. 1")], None), 2);
         assert!(store.get(1).is_none());
         assert_eq!(store.get(2).unwrap().tabs[0].slug, "gg");
     }
@@ -196,8 +204,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions.json");
         let mut store = WorkspaceStore::open(&path);
-        assert_eq!(store.save(None, 0, vec![tab("bgb", "§ 1")]), 1);
-        assert_eq!(store.save(None, 0, vec![tab("gg", "Art. 1")]), 2);
+        assert_eq!(store.save(None, 0, vec![tab("bgb", "§ 1")], None), 1);
+        assert_eq!(store.save(None, 0, vec![tab("gg", "Art. 1")], None), 2);
         assert_eq!(
             store.list().iter().map(|ws| ws.id).collect::<Vec<_>>(),
             vec![2, 1]
@@ -213,5 +221,28 @@ mod tests {
         store.remove_all();
         assert_eq!(store.mru_id(), None);
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn save_roundtrips_session_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let mut store = WorkspaceStore::open(&path);
+        let id = store.save(
+            None,
+            -1,
+            vec![],
+            Some(vec!["BGB".into(), "StVG".into()]),
+        );
+        let reopened = WorkspaceStore::open(&path);
+        assert_eq!(
+            reopened.get(id).unwrap().core.as_deref(),
+            Some(["BGB".to_string(), "StVG".to_string()].as_slice())
+        );
+        store.save(Some(id), 0, vec![tab("bgb", "§ 1")], None);
+        assert_eq!(
+            store.get(id).unwrap().core.as_deref(),
+            Some(["BGB".to_string(), "StVG".to_string()].as_slice())
+        );
     }
 }

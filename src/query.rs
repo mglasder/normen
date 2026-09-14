@@ -1,5 +1,5 @@
-use crate::catalog::{filter_laws, resolve_law, LawRef};
-use crate::cli::{CliFlags, Command, QuerySpec};
+use crate::catalog::{filter_from, resolve_in, sort_by_shortcut, LawRef};
+use crate::cli::{CliFlags, Command, LawSort, QuerySpec};
 use crate::models::{CitationKey, Law};
 use crate::search::{lookup_norm, search_norms};
 use serde::Serialize;
@@ -12,9 +12,9 @@ pub struct QueryFail {
 
 #[derive(Serialize)]
 struct LawRow {
-    shortcut: &'static str,
-    slug: &'static str,
-    title: &'static str,
+    shortcut: String,
+    slug: String,
+    title: String,
 }
 
 #[derive(Serialize)]
@@ -31,13 +31,13 @@ struct OutlineNorm {
 
 #[derive(Serialize)]
 struct OutlineOut {
-    law: &'static str,
+    law: String,
     norms: Vec<OutlineNorm>,
 }
 
 #[derive(Serialize)]
 struct GetOut {
-    law: &'static str,
+    law: String,
     citation: String,
     title: String,
     text: String,
@@ -53,7 +53,7 @@ struct SearchHitOut {
 
 #[derive(Serialize)]
 struct SearchOut {
-    law: &'static str,
+    law: String,
     query: String,
     limit: Option<usize>,
     total: usize,
@@ -63,12 +63,22 @@ struct SearchOut {
 pub fn run_print(
     command: &Command,
     flags: &CliFlags,
+    core: &[LawRef],
     load: impl Fn(&LawRef, bool) -> Result<Law, String>,
 ) -> Result<String, QueryFail> {
     match command {
-        Command::Laws { filter } => {
+        Command::Laws { filter, sort } => {
             let query = filter.clone().unwrap_or_default();
-            let laws = filter_laws(&query)
+            let mut laws: Vec<LawRef> = filter_from(&query, core)
+                .into_iter()
+                .cloned()
+                .collect();
+            match sort {
+                LawSort::Priority => {}
+                LawSort::Alpha => sort_by_shortcut(&mut laws, false),
+                LawSort::Rev => sort_by_shortcut(&mut laws, true),
+            }
+            let laws = laws
                 .into_iter()
                 .map(|law| LawRow {
                     shortcut: law.shortcut,
@@ -83,7 +93,7 @@ pub fn run_print(
             })
         }
         Command::Query { law, spec } => {
-            let Some(law_ref) = resolve_law(law) else {
+            let Some(law_ref) = resolve_in(law, core) else {
                 return Err(QueryFail {
                     message: format!("unknown law: {law}"),
                     exit: 2,
@@ -96,7 +106,7 @@ pub fn run_print(
                         exit: 1,
                     })?;
                     let out = OutlineOut {
-                        law: law_ref.shortcut,
+                        law: law_ref.shortcut.clone(),
                         norms: loaded
                             .norms
                             .into_iter()
@@ -129,7 +139,7 @@ pub fn run_print(
                         });
                     };
                     let out = GetOut {
-                        law: law_ref.shortcut,
+                        law: law_ref.shortcut.clone(),
                         citation: norm.citation.clone(),
                         title: norm.title.clone(),
                         text: norm.text.clone(),
@@ -156,7 +166,7 @@ pub fn run_print(
                         )
                     };
                     let out = SearchOut {
-                        law: law_ref.shortcut,
+                        law: law_ref.shortcut.clone(),
                         query: needle.clone(),
                         limit,
                         total,
@@ -188,7 +198,7 @@ pub fn run_print(
 mod tests {
     use super::*;
     use crate::cli::parse_args;
-    use crate::catalog::LawRef;
+    use crate::catalog::{default_core, LawRef};
     use crate::models::{CitationKey, Law, Norm};
     use crate::parser::parse_law_xml;
 
@@ -221,7 +231,7 @@ mod tests {
     #[test]
     fn laws_unfiltered_includes_bgb() {
         let (cmd, flags) = parse_args(["normen", "laws"]).unwrap();
-        let raw = run_print(&cmd, &flags, unused_load).unwrap();
+        let raw = run_print(&cmd, &flags, &default_core(), unused_load).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["query"], "");
         let laws = v["laws"].as_array().unwrap();
@@ -237,7 +247,7 @@ mod tests {
     fn laws_filter_buerger_is_bgb_and_egbgb() {
         let (cmd, flags) = parse_args(["normen", "laws", "bürger"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, unused_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), unused_load).unwrap()).unwrap();
         assert_eq!(v["query"], "bürger");
         let shortcuts: Vec<_> = v["laws"]
             .as_array()
@@ -251,7 +261,7 @@ mod tests {
     #[test]
     fn laws_empty_filter_is_empty_array_ok() {
         let (cmd, flags) = parse_args(["normen", "laws", "xyzzy"]).unwrap();
-        let raw = run_print(&cmd, &flags, unused_load).unwrap();
+        let raw = run_print(&cmd, &flags, &default_core(), unused_load).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["query"], "xyzzy");
         assert_eq!(v["laws"].as_array().unwrap().len(), 0);
@@ -260,7 +270,7 @@ mod tests {
     #[test]
     fn unknown_law_is_exit_two_and_does_not_load() {
         let (cmd, flags) = parse_args(["normen", "xyzzy"]).unwrap();
-        let err = run_print(&cmd, &flags, |_, _| panic!("must not load")).unwrap_err();
+        let err = run_print(&cmd, &flags, &default_core(), |_, _| panic!("must not load")).unwrap_err();
         assert_eq!(err.exit, 2);
         assert_eq!(err.message, "unknown law: xyzzy");
     }
@@ -269,7 +279,7 @@ mod tests {
     fn outline_lists_sample_norms() {
         let (cmd, flags) = parse_args(["normen", "BGB"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), sample_load).unwrap()).unwrap();
         assert_eq!(v["law"], "BGB");
         let citations: Vec<_> = v["norms"].as_array().unwrap().iter().map(|n| n["citation"].as_str().unwrap().to_string()).collect();
         assert!(citations.contains(&"§ 433".to_string()));
@@ -281,7 +291,7 @@ mod tests {
     #[test]
     fn outline_passes_refresh_to_load() {
         let (cmd, flags) = parse_args(["normen", "--refresh", "BGB"]).unwrap();
-        let err = run_print(&cmd, &flags, |_, refresh| {
+        let err = run_print(&cmd, &flags, &default_core(), |_, refresh| {
             assert!(refresh);
             Err("saw refresh".into())
         }).unwrap_err();
@@ -293,7 +303,7 @@ mod tests {
     fn get_433_returns_norm_body() {
         let (cmd, flags) = parse_args(["normen", "bgb", "433"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), sample_load).unwrap()).unwrap();
         assert_eq!(v["law"], "BGB");
         assert_eq!(v["citation"], "§ 433");
         assert_eq!(v["title"], "Vertragstypische Pflichten beim Kaufvertrag");
@@ -304,7 +314,7 @@ mod tests {
     #[test]
     fn get_unknown_number_is_exit_two() {
         let (cmd, flags) = parse_args(["normen", "BGB", "99999"]).unwrap();
-        let err = run_print(&cmd, &flags, sample_load).unwrap_err();
+        let err = run_print(&cmd, &flags, &default_core(), sample_load).unwrap_err();
         assert_eq!(err.exit, 2);
         assert_eq!(err.message, "unknown citation: 99999");
     }
@@ -312,7 +322,7 @@ mod tests {
     #[test]
     fn get_bare_word_is_not_a_citation() {
         let (cmd, flags) = parse_args(["normen", "BGB", "Kaufvertrag"]).unwrap();
-        let err = run_print(&cmd, &flags, sample_load).unwrap_err();
+        let err = run_print(&cmd, &flags, &default_core(), sample_load).unwrap_err();
         assert_eq!(err.exit, 2);
         assert_eq!(err.message, "not a citation: Kaufvertrag");
     }
@@ -321,7 +331,7 @@ mod tests {
     fn get_ignores_limit_flag() {
         let (cmd, flags) = parse_args(["normen", "--limit", "1", "BGB", "433"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), sample_load).unwrap()).unwrap();
         assert_eq!(v["citation"], "§ 433");
         assert!(v.get("hits").is_none());
     }
@@ -330,7 +340,7 @@ mod tests {
     fn search_default_limit_is_ten() {
         let (cmd, flags) = parse_args(["normen", "BGB", "/Vertrag"]).unwrap();
         let v: serde_json::Value = serde_json::from_str(
-            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+            &run_print(&cmd, &flags, &default_core(), |_, _| Ok(many_vertrag())).unwrap(),
         )
         .unwrap();
         assert_eq!(v["law"], "BGB");
@@ -350,7 +360,7 @@ mod tests {
     fn search_limit_flag_caps_hits() {
         let (cmd, flags) = parse_args(["normen", "--limit", "3", "BGB", "/Vertrag"]).unwrap();
         let v: serde_json::Value = serde_json::from_str(
-            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+            &run_print(&cmd, &flags, &default_core(), |_, _| Ok(many_vertrag())).unwrap(),
         )
         .unwrap();
         assert_eq!(v["limit"], 3);
@@ -362,7 +372,7 @@ mod tests {
     fn search_all_is_uncapped_null_limit() {
         let (cmd, flags) = parse_args(["normen", "--all", "BGB", "/Vertrag"]).unwrap();
         let v: serde_json::Value = serde_json::from_str(
-            &run_print(&cmd, &flags, |_, _| Ok(many_vertrag())).unwrap(),
+            &run_print(&cmd, &flags, &default_core(), |_, _| Ok(many_vertrag())).unwrap(),
         )
         .unwrap();
         assert!(v["limit"].is_null());
@@ -374,7 +384,7 @@ mod tests {
     fn search_empty_hits_is_ok_document() {
         let (cmd, flags) = parse_args(["normen", "BGB", "/xyzzy"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), sample_load).unwrap()).unwrap();
         assert_eq!(v["total"], 0);
         assert_eq!(v["limit"], 10);
         assert_eq!(v["hits"].as_array().unwrap().len(), 0);
@@ -384,7 +394,7 @@ mod tests {
     fn search_uses_sample_kauf_preview() {
         let (cmd, flags) = parse_args(["normen", "BGB", "/Kaufvertrag"]).unwrap();
         let v: serde_json::Value =
-            serde_json::from_str(&run_print(&cmd, &flags, sample_load).unwrap()).unwrap();
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), sample_load).unwrap()).unwrap();
         assert_eq!(v["hits"][0]["citation"], "§ 433");
         assert_eq!(v["hits"][0]["title"], "Vertragstypische Pflichten beim Kaufvertrag");
         assert!(v["hits"][0]["preview"].as_str().unwrap().to_lowercase().contains("kauf"));
@@ -394,7 +404,7 @@ mod tests {
     fn print_path_has_no_lade_side_channel() {
         // run_print is the print product; it must not write to stdout/stderr.
         let (cmd, flags) = parse_args(["normen", "BGB", "433"]).unwrap();
-        let json = run_print(&cmd, &flags, sample_load).unwrap();
+        let json = run_print(&cmd, &flags, &default_core(), sample_load).unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
         assert!(!json.contains("Lade"));
     }
@@ -404,9 +414,64 @@ mod tests {
         let unknown = run_print(
             &parse_args(["normen", "nope"]).unwrap().0,
             &parse_args(["normen", "nope"]).unwrap().1,
+            &default_core(),
             unused_load,
         )
         .unwrap_err();
         assert_eq!(unknown.exit, 2);
+    }
+
+    #[test]
+    fn laws_sort_alpha_and_rev_by_shortcut() {
+        let (cmd, flags) = parse_args(["normen", "laws", "--sort", "alpha"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), unused_load).unwrap())
+                .unwrap();
+        let shortcuts: Vec<_> = v["laws"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["shortcut"].as_str().unwrap().to_string())
+            .collect();
+        let mut expected = shortcuts.clone();
+        expected.sort_by_key(|s| s.to_lowercase());
+        assert_eq!(shortcuts, expected);
+        let (cmd, flags) = parse_args(["normen", "laws", "--sort", "rev"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, &default_core(), unused_load).unwrap())
+                .unwrap();
+        let rev: Vec<_> = v["laws"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["shortcut"].as_str().unwrap().to_string())
+            .collect();
+        let mut expected_rev = expected;
+        expected_rev.reverse();
+        assert_eq!(rev, expected_rev);
+    }
+
+    #[test]
+    fn laws_unknown_to_core_is_not_listed() {
+        let core = vec![LawRef::new("BGB", "bgb", "Bürgerliches Gesetzbuch", &[])];
+        let (cmd, flags) = parse_args(["normen", "laws"]).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&run_print(&cmd, &flags, &core, unused_load).unwrap()).unwrap();
+        let shortcuts: Vec<_> = v["laws"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["shortcut"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(shortcuts, vec!["BGB"]);
+    }
+
+    #[test]
+    fn query_outside_core_is_unknown() {
+        let core = vec![LawRef::new("BGB", "bgb", "Bürgerliches Gesetzbuch", &[])];
+        let (cmd, flags) = parse_args(["normen", "StVG"]).unwrap();
+        let err = run_print(&cmd, &flags, &core, |_, _| panic!("must not load")).unwrap_err();
+        assert_eq!(err.exit, 2);
+        assert_eq!(err.message, "unknown law: StVG");
     }
 }

@@ -13,11 +13,21 @@ pub enum QuerySpec {
     Search(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LawSort {
+    Priority,
+    Alpha,
+    Rev,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Open,
     Query { law: String, spec: QuerySpec },
-    Laws { filter: Option<String> },
+    Laws {
+        filter: Option<String>,
+        sort: LawSort,
+    },
     Attach { id: Option<u32> },
     List,
     Remove { id: Option<u32>, all: bool },
@@ -34,7 +44,7 @@ const ROOT_AFTER_HELP: &str = "\
 Ohne Gesetz: interaktives TUI (Terminal nötig).
 Mit Gesetz oder »laws«: pretty JSON auf stdout, kein TUI, kein »Lade …«.
 
-  normen laws [filter]     Katalog { query, laws: [{ shortcut, slug, title }] }
+  normen laws [filter]     CORE { query, laws: [{ shortcut, slug, title }] }
   normen BGB               Gliederung { law, norms: [{ citation, title }] }
   normen BGB 433           Norm { law, citation, title, text }
   normen BGB /kauf         Suche { law, query, limit, total, hits }
@@ -48,8 +58,11 @@ Sonst Exit 1. Leere Suche oder leerer Katalogfilter: Exit 0, leeres Array.
 --limit 0 und --all zusammen mit --limit sind ungültig.";
 
 const LAWS_AFTER_HELP: &str = "\
-  normen laws              alle Einträge
-  normen laws bürger       Filter über Kürzel, Slug, Titel oder Alias
+  normen laws                 CORE in Prioritätsreihenfolge
+  normen laws bürger          Filter über Kürzel, Slug, Titel oder Alias
+  normen laws --sort alpha    Kürzel A–Z
+  normen laws --sort rev      Kürzel Z–A
+  normen laws --sort priority Priorität (conf / Standard, Vorgabe)
 
 Ausgabe: { query, laws: [{ shortcut, slug, title }] }
 Leerer Filter: Exit 0, laws: []. --limit/--all/--refresh wirken nicht.";
@@ -94,14 +107,17 @@ enum SubCommand {
     /// Gespeicherte Workspaces auflisten
     #[command(about = "Gespeicherte Workspaces auflisten (kein JSON-Gesetzestext).")]
     List,
-    /// Katalog der verfügbaren Gesetze (JSON)
+    /// CORE der verfügbaren Gesetze (JSON)
     #[command(
-        about = "Katalog der verfügbaren Gesetze als JSON.",
+        about = "CORE der verfügbaren Gesetze als JSON.",
         after_help = LAWS_AFTER_HELP
     )]
     Laws {
         /// Teilstring für Kürzel, Slug, Titel oder Alias
         filter: Option<String>,
+        /// Reihenfolge: priority (Vorgabe), alpha, rev
+        #[arg(long, default_value = "priority", value_parser = ["priority", "alpha", "rev"])]
+        sort: String,
     },
     /// Gespeicherte Workspaces löschen
     #[command(
@@ -158,7 +174,7 @@ fn peek_subcommand<T: AsRef<std::ffi::OsStr>>(args: &[T]) -> Option<&'static str
             skip_value = false;
             continue;
         }
-        if text == "--limit" {
+        if text == "--limit" || text == "--sort" {
             skip_value = true;
             continue;
         }
@@ -206,7 +222,10 @@ where
     let command = match cli.command {
         Some(SubCommand::Attach { id }) => Command::Attach { id },
         Some(SubCommand::List) => Command::List,
-        Some(SubCommand::Laws { filter }) => Command::Laws { filter },
+        Some(SubCommand::Laws { filter, sort }) => Command::Laws {
+            filter,
+            sort: parse_law_sort(&sort)?,
+        },
         Some(SubCommand::Rm { id, all }) => {
             if !all && id.is_none() {
                 return Err("rm requires an id or --all".into());
@@ -232,6 +251,15 @@ where
             all: cli.all,
         },
     ))
+}
+
+fn parse_law_sort(raw: &str) -> Result<LawSort, String> {
+    match raw {
+        "priority" => Ok(LawSort::Priority),
+        "alpha" => Ok(LawSort::Alpha),
+        "rev" => Ok(LawSort::Rev),
+        other => Err(format!("unknown --sort {other}")),
+    }
 }
 
 fn classify_norm(norm: Option<String>) -> QuerySpec {
@@ -360,12 +388,34 @@ mod tests {
     fn parse_laws_and_filter() {
         assert_eq!(
             parse_args(["normen", "laws"]).unwrap().0,
-            Command::Laws { filter: None }
+            Command::Laws {
+                filter: None,
+                sort: LawSort::Priority,
+            }
         );
         assert_eq!(
             parse_args(["normen", "laws", "bürger"]).unwrap().0,
             Command::Laws {
-                filter: Some("bürger".into())
+                filter: Some("bürger".into()),
+                sort: LawSort::Priority,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_laws_sort_flags() {
+        assert_eq!(
+            parse_args(["normen", "laws", "--sort", "alpha"]).unwrap().0,
+            Command::Laws {
+                filter: None,
+                sort: LawSort::Alpha,
+            }
+        );
+        assert_eq!(
+            parse_args(["normen", "laws", "--sort", "rev", "bgb"]).unwrap().0,
+            Command::Laws {
+                filter: Some("bgb".into()),
+                sort: LawSort::Rev,
             }
         );
     }
@@ -427,7 +477,7 @@ mod tests {
     #[test]
     fn parse_limit_after_laws_is_global() {
         let (cmd, flags) = parse_args(["normen", "laws", "--limit", "5"]).unwrap();
-        assert_eq!(cmd, Command::Laws { filter: None });
+        assert_eq!(cmd, Command::Laws { filter: None, sort: LawSort::Priority });
         assert_eq!(flags.limit, Some(5));
     }
 
@@ -484,6 +534,7 @@ mod tests {
                     citation: "Art 1".into(),
                 },
             ],
+            None,
         );
         let listing = format_list(&store);
         assert!(listing.contains("ID"), "{listing}");
@@ -511,6 +562,8 @@ mod tests {
             "{help}"
         );
         assert!(help.contains("shortcut, slug, title"), "{help}");
+        assert!(help.contains("--sort"), "{help}");
+        assert!(help.contains("priority"), "{help}");
     }
 
     #[test]
@@ -531,6 +584,7 @@ mod tests {
                 slug: "bgb".into(),
                 citation: "§ 1".into(),
             }],
+            None,
         );
         apply_cli(
             &Command::Remove {

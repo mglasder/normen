@@ -57,7 +57,8 @@ pub fn load_law(
     fs::create_dir_all(cache_dir).map_err(|err| format!("cache: {err}"))?;
     let cache_path = cache_dir.join(format!("{}.xml", law_ref.slug));
     let xml = if refresh || !cache_path.exists() {
-        let data = download(law_ref.slug).map_err(|err| format!("{}: {err}", law_ref.shortcut))?;
+        let data =
+            download(&law_ref.slug).map_err(|err| format!("{}: {err}", law_ref.shortcut))?;
         fs::write(&cache_path, &data).map_err(|err| format!("cache write: {err}"))?;
         data
     } else {
@@ -103,8 +104,8 @@ mod tests {
             }
         };
         let law_ref = resolve_law("bgb").unwrap();
-        let first = load_law(dir.path(), &download, law_ref, false).unwrap();
-        let second = load_law(dir.path(), &download, law_ref, false).unwrap();
+        let first = load_law(dir.path(), &download, &law_ref, false).unwrap();
+        let second = load_law(dir.path(), &download, &law_ref, false).unwrap();
         assert_eq!(*calls.borrow(), vec!["bgb".to_string()]);
         assert_eq!(first.abbreviation, "BGB");
         assert_eq!(second.norms[0].citation, "Buch 1");
@@ -126,8 +127,8 @@ mod tests {
             }
         };
         let law_ref = resolve_law("bgb").unwrap();
-        load_law(dir.path(), make(), law_ref, false).unwrap();
-        load_law(dir.path(), make(), law_ref, true).unwrap();
+        load_law(dir.path(), make(), &law_ref, false).unwrap();
+        load_law(dir.path(), make(), &law_ref, true).unwrap();
         assert_eq!(*calls.borrow(), 2);
     }
 
@@ -138,7 +139,7 @@ mod tests {
         let err = load_law(
             dir.path(),
             |_slug| Err(io::Error::other("nope")),
-            law_ref,
+            &law_ref,
             true,
         )
         .unwrap_err();
