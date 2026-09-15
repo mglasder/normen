@@ -25,5 +25,5 @@ CORE display and `normen laws` default order: the `[core] order` list in the con
 _Avoid_: custom order, config order (say priority order or conf order)
 
 **Mark**:
-A toggle in the Bundesrecht pane. Space marks a law to add (if it is not on CORE) or to remove (if it is). Enter applies every mark; Esc discards them.
+A toggle in the Bundesrecht pane. Space marks a law to add (if it is not on CORE) or to remove (if it is), including while `/` search is still typing. Enter applies every mark, or the highlighted row when none are marked. Esc discards them. Tab reviews the mark list only when it is not empty.
 _Avoid_: select, pin, checkbox

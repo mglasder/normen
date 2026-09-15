@@ -570,7 +570,9 @@ impl App {
                     }
                     Some(Action::EnterSearch) => overlay.resume_typing(),
                     _ => {
-                        if key == Key::Backspace {
+                        if key == Key::Char(' ') {
+                            overlay.toggle_mark();
+                        } else if key == Key::Backspace {
                             overlay.search_backspace(&self.index);
                         } else if let Some(ch) = printable(key) {
                             overlay.type_search(ch, &self.index);
@@ -618,10 +620,13 @@ impl App {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
-        if overlay.marks.is_empty() {
-            return;
+        let mut marked = overlay.marked_list();
+        if marked.is_empty() {
+            let Some(law) = overlay.highlighted() else {
+                return;
+            };
+            marked.push(law.shortcut.to_lowercase());
         }
-        let marked = overlay.marked_list();
         let next = apply_marks(&self.menu.core, &self.index, &marked);
         self.apply_core(next);
     }
@@ -4041,20 +4046,93 @@ mod tests {
     }
 
     #[test]
-    fn bund_tab_opens_auswahl_even_without_marks() {
+    fn bund_tab_without_marks_stays_on_catalog() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
         app.index = sample_index();
         press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
-        let before = render_joined(&mut app, 80, 24);
-        assert!(!before.contains("keine Markierung"), "{before}");
         app.handle_key(Key::Tab);
+        let overlay = app.overlay.as_ref().unwrap();
+        assert!(!overlay.in_marks());
+        assert!(!overlay.show_marks_panel());
         let after = render_joined(&mut app, 80, 24);
-        assert!(after.contains("Auswahl"), "{after}");
-        assert!(after.contains("keine Markierung"), "{after}");
-        app.handle_key(Key::Tab);
-        let closed = render_joined(&mut app, 80, 24);
-        assert!(!closed.contains("keine Markierung"), "{closed}");
+        assert!(!after.contains("keine Markierung"), "{after}");
+        let body: String = after.lines().take(23).collect();
+        assert!(!body.contains("Auswahl"), "{after}");
+        assert!(after.contains("BGB"), "{after}");
+    }
+
+    #[test]
+    fn overlay_enter_without_space_applies_highlight() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Char('j'), Key::Enter]);
+        assert!(app.overlay.is_none());
+        assert!(app.menu.core.iter().any(|law| law.shortcut == "StVG"));
+        assert_eq!(app.menu.core.last().unwrap().shortcut, "StVG");
+    }
+
+    #[test]
+    fn overlay_enter_adds_umlaut_shortcut() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = vec![
+            LawRef::new("BGB", "bgb", "Bürgerliches Gesetzbuch", &[]),
+            LawRef::new(
+                "Ärzte-ZV",
+                "aerztezv",
+                "Zulassungsverordnung für Vertragsärzte",
+                &[],
+            ),
+            LawRef::new(
+                "AAÜbertrAnO",
+                "aa_bertrano",
+                "Anordnung zur Übertragung von Zuständigkeiten",
+                &[],
+            ),
+        ];
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Enter]);
+        assert!(
+            app.menu.core.iter().any(|law| law.shortcut == "Ärzte-ZV"),
+            "Ärzte-ZV missing from CORE: {:?}",
+            app.menu
+                .core
+                .iter()
+                .map(|law| law.shortcut.as_str())
+                .collect::<Vec<_>>()
+        );
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(&mut app, &[Key::Char('j'), Key::Char('j'), Key::Enter]);
+        assert!(
+            app.menu
+                .core
+                .iter()
+                .any(|law| law.shortcut == "AAÜbertrAnO"),
+            "AAÜbertrAnO missing from CORE"
+        );
+    }
+
+    #[test]
+    fn bund_space_marks_during_search_typing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.index = sample_index();
+        press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
+        press(
+            &mut app,
+            &[Key::Slash, Key::Char('s'), Key::Char('t'), Key::Char('v')],
+        );
+        assert_eq!(app.mode_label(), "SEARCH");
+        app.handle_key(Key::Char(' '));
+        let overlay = app.overlay.as_ref().unwrap();
+        assert_eq!(overlay.marked_list(), vec!["stvg"]);
+        assert_eq!(overlay.search_query(), "stv");
+        let joined = render_joined(&mut app, 80, 24);
+        assert!(joined.contains("Auswahl"), "{joined}");
+        assert!(joined.contains("StVG"), "{joined}");
     }
 
     #[test]

@@ -152,8 +152,10 @@ in this session until **Ctrl-q**; it does not edit the conf.
 `Ctrl-n` then `a` opens the Bundesrecht pane on the entire catalog. Full
 titles wrap onto following rows. `/` searches by shortcut, slug, or title;
 the query stays in the pane. `hjkl` move. Space marks a law to add (or to
-remove if it is already on CORE). Enter applies every mark and closes; Esc
-discards marks. The pane does not open a law — add it, then open from MENU.
+remove if it is already on CORE), including while typing a `/` query. Enter
+applies every mark and closes; with no marks it applies the highlighted row.
+Tab reviews marks only when at least one exists. Esc discards marks. The pane
+does not open a law — add it, then open from MENU.
 
 In a law tab, `/` filters paragraphs (fuzzy list with preview) the same
 way: type, `Enter` to move with `j` `k`, `Enter` again to jump. `Esc`

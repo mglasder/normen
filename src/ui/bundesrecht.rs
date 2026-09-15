@@ -59,21 +59,24 @@ impl BundesrechtOverlay {
     }
 
     pub fn show_marks_panel(&self) -> bool {
-        self.focus == BundFocus::Marks || !self.marks.is_empty()
+        !self.marks.is_empty()
     }
 
     pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            BundFocus::Catalog => BundFocus::Marks,
-            BundFocus::Marks => BundFocus::Catalog,
-        };
-        if self.focus == BundFocus::Marks && !self.marks.is_empty() {
-            self.mark_highlight = self.mark_highlight.min(self.marks.len() - 1);
-            if self.mode == Mode::Search {
-                if let Some(prompt) = &mut self.prompt {
-                    prompt.phase = Phase::Navigating;
+        match self.focus {
+            BundFocus::Catalog => {
+                if self.marks.is_empty() {
+                    return;
+                }
+                self.focus = BundFocus::Marks;
+                self.mark_highlight = self.mark_highlight.min(self.marks.len() - 1);
+                if self.mode == Mode::Search {
+                    if let Some(prompt) = &mut self.prompt {
+                        prompt.phase = Phase::Navigating;
+                    }
                 }
             }
+            BundFocus::Marks => self.focus = BundFocus::Catalog,
         }
     }
 
@@ -401,6 +404,18 @@ mod tests {
         let marked = overlay.marked_laws(&index);
         assert_eq!(marked.len(), 1, "Auswahl must show the marked umlaut law");
         assert_eq!(marked[0].shortcut, "Ärzte-ZV");
+    }
+
+    #[test]
+    fn tab_without_marks_stays_on_catalog() {
+        let mut overlay = BundesrechtOverlay::new(&sample_index());
+        overlay.toggle_focus();
+        assert_eq!(overlay.focus, BundFocus::Catalog);
+        assert!(!overlay.show_marks_panel());
+        overlay.toggle_mark();
+        overlay.toggle_focus();
+        assert_eq!(overlay.focus, BundFocus::Marks);
+        assert!(overlay.show_marks_panel());
     }
 
     #[test]
