@@ -78,8 +78,7 @@ impl BundesrechtOverlay {
     }
 
     pub fn is_marked(&self, law: &LawRef) -> bool {
-        let key = law.shortcut.to_lowercase();
-        self.marks.iter().any(|mark| mark == &key)
+        self.marks.iter().any(|mark| law.matches_key(mark))
     }
 
     pub fn marked_laws(&self, index: &[LawRef]) -> Vec<LawRef> {
@@ -89,7 +88,7 @@ impl BundesrechtOverlay {
                 self.visible
                     .iter()
                     .chain(index.iter())
-                    .find(|law| law.shortcut.eq_ignore_ascii_case(key))
+                    .find(|law| law.matches_key(key))
                     .cloned()
             })
             .collect()
@@ -382,6 +381,26 @@ mod tests {
         overlay.toggle_mark();
         assert!(overlay.marks.is_empty());
         assert_eq!(overlay.focus, BundFocus::Catalog);
+    }
+
+    #[test]
+    fn marked_laws_resolve_umlaut_shortcut() {
+        let index = vec![
+            LawRef::new("BGB", "bgb", "Bürgerliches Gesetzbuch", &[]),
+            LawRef::new(
+                "Ärzte-ZV",
+                "aerztezv",
+                "Zulassungsverordnung für Vertragsärzte",
+                &[],
+            ),
+        ];
+        let mut overlay = BundesrechtOverlay::new(&index);
+        overlay.highlight = 1;
+        overlay.toggle_mark();
+        assert_eq!(overlay.marked_list(), vec!["ärzte-zv"]);
+        let marked = overlay.marked_laws(&index);
+        assert_eq!(marked.len(), 1, "Auswahl must show the marked umlaut law");
+        assert_eq!(marked[0].shortcut, "Ärzte-ZV");
     }
 
     #[test]

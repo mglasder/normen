@@ -1885,7 +1885,7 @@ fn menu_row(law: &LawRef, query: &str, searching: bool, theme: &Theme) -> Line<'
 fn bund_mark<'a>(overlay: &BundesrechtOverlay, law: &LawRef, core: &[LawRef]) -> &'a str {
     let on_core = core
         .iter()
-        .any(|item| item.shortcut.eq_ignore_ascii_case(&law.shortcut));
+        .any(|item| LawRef::keys_match(&item.shortcut, &law.shortcut));
     if overlay.is_marked(law) {
         if on_core {
             "-"

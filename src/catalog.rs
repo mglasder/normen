@@ -21,13 +21,15 @@ impl LawRef {
         }
     }
 
+    pub fn keys_match(left: &str, right: &str) -> bool {
+        left.to_lowercase() == right.to_lowercase()
+    }
+
     pub fn matches_key(&self, key: &str) -> bool {
-        self.shortcut.eq_ignore_ascii_case(key)
-            || self.slug.eq_ignore_ascii_case(key)
-            || self
-                .aliases
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(key))
+        let key = key.trim();
+        Self::keys_match(&self.shortcut, key)
+            || Self::keys_match(&self.slug, key)
+            || self.aliases.iter().any(|alias| Self::keys_match(alias, key))
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
@@ -131,7 +133,7 @@ pub fn resolve_core(order: Option<&[String]>, index: &[LawRef]) -> (Vec<LawRef>,
         if let Some(law) = find_law(key, &seed).or_else(|| find_law(key, index)) {
             if core
                 .iter()
-                .any(|existing: &LawRef| existing.shortcut.eq_ignore_ascii_case(&law.shortcut))
+                .any(|existing: &LawRef| LawRef::keys_match(&existing.shortcut, &law.shortcut))
             {
                 continue;
             }
@@ -185,18 +187,13 @@ pub fn sort_by_shortcut(laws: &mut [LawRef], reverse: bool) {
 pub fn apply_marks(core: &[LawRef], index: &[LawRef], marked: &[String]) -> Vec<LawRef> {
     let mut next = core.to_vec();
     for mark in marked {
-        let on_core = next
-            .iter()
-            .any(|law| law.shortcut.eq_ignore_ascii_case(mark));
+        let on_core = next.iter().any(|law| law.matches_key(mark));
         if on_core {
-            next.retain(|law| !law.shortcut.eq_ignore_ascii_case(mark));
+            next.retain(|law| !law.matches_key(mark));
             continue;
         }
         if let Some(law) = find_law(mark, index) {
-            if !next
-                .iter()
-                .any(|existing| existing.shortcut.eq_ignore_ascii_case(&law.shortcut))
-            {
+            if !next.iter().any(|existing| existing.matches_key(&law.shortcut)) {
                 next.push(law.clone());
             }
         }
@@ -206,7 +203,7 @@ pub fn apply_marks(core: &[LawRef], index: &[LawRef], marked: &[String]) -> Vec<
 
 pub fn remove_from_core(core: &[LawRef], shortcut: &str) -> Vec<LawRef> {
     core.iter()
-        .filter(|law| !law.shortcut.eq_ignore_ascii_case(shortcut))
+        .filter(|law| !law.matches_key(shortcut))
         .cloned()
         .collect()
 }
@@ -372,6 +369,22 @@ mod tests {
         assert!(next.iter().any(|law| law.shortcut == "StVG"));
         assert!(next.last().unwrap().shortcut == "StVG");
         assert!(!next.iter().any(|law| law.shortcut == "GG"));
+    }
+
+    #[test]
+    fn marks_append_resolves_umlaut_shortcut() {
+        let core = default_core();
+        let index = vec![LawRef::new(
+            "Ärzte-ZV",
+            "aerztezv",
+            "Zulassungsverordnung für Vertragsärzte",
+            &[],
+        )];
+        let next = apply_marks(&core, &index, &["ärzte-zv".into()]);
+        assert!(
+            next.iter().any(|law| law.shortcut == "Ärzte-ZV"),
+            "umlaut shortcut must join CORE: {next:?}"
+        );
     }
 
     #[test]
