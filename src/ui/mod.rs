@@ -4441,6 +4441,25 @@ mod tests {
     }
 
     #[test]
+    fn menu_d_keeps_highlight_on_next_or_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_at(dir.path(), None);
+        app.handle_key(Key::Char('j'));
+        assert_eq!(app.menu.highlighted().unwrap().shortcut, "GG");
+        app.handle_key(Key::Char('d'));
+        app.handle_key(Key::Char('y'));
+        assert_eq!(app.menu.highlighted().unwrap().shortcut, "VwGO");
+        assert_eq!(app.picker_highlight(), 1);
+
+        app.menu.highlight = app.menu.filtered.len() - 1;
+        let previous = app.menu.filtered[app.menu.highlight - 1].shortcut.clone();
+        app.handle_key(Key::Char('d'));
+        app.handle_key(Key::Char('y'));
+        assert_eq!(app.menu.highlighted().unwrap().shortcut, previous);
+        assert_eq!(app.picker_highlight(), app.menu.filtered.len() - 1);
+    }
+
+    #[test]
     fn conf_stvg_resolves_from_cached_index() {
         let dir = tempfile::tempdir().unwrap();
         crate::bundesrecht::save_cache(dir.path(), &sample_index()).unwrap();

@@ -26,8 +26,22 @@ impl MenuState {
     }
 
     pub fn set_core(&mut self, core: Vec<LawRef>) {
+        let highlight = self.highlight;
         self.core = core;
-        self.reset_list();
+        if self.mode == Mode::Search && self.prompt.is_some() {
+            let query = self.search_query().to_string();
+            self.filtered = filter_from(&query, &self.core)
+                .into_iter()
+                .cloned()
+                .collect();
+        } else {
+            self.filtered = self.core.clone();
+        }
+        self.highlight = if self.filtered.is_empty() {
+            0
+        } else {
+            highlight.min(self.filtered.len() - 1)
+        };
     }
 
     pub fn search_nav(&self) -> bool {
