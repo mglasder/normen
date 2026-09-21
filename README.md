@@ -1,7 +1,7 @@
 # normen
 
 Vim-style CLI to search and read German law from
-[gesetze-im-internet.de](https://www.gesetze-im-internet.de/).
+[gesetze-im-internet.de](https://www.gesetze-im-internet.de/). For both agents (CLI) and humans (TUI, CLI) alike.
 
 Currently included: **BGB**, **GG**, **VwGO**, **VwVfG**, **BVerfGG**,
 **GOBT**, **GOBR**, **PartG**, **VereinsG**, **VersammlG**, **BauGB**,
