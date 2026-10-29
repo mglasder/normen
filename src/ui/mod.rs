@@ -824,6 +824,7 @@ impl App {
         let area = frame.area();
         let chunks = Layout::vertical([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(1),
@@ -832,12 +833,16 @@ impl App {
 
         let theme = self.theme();
         frame.render_widget(
-            Paragraph::new(self.tab_line()).style(Style::default().bg(theme.surface)),
+            Block::new().style(Style::default().bg(theme.background)),
             chunks[0],
         );
-        self.draw_cmd(frame, chunks[1]);
-        self.body_width = chunks[2].width;
-        self.body_height = chunks[2].height;
+        frame.render_widget(
+            Paragraph::new(self.tab_line()).style(Style::default().bg(theme.surface)),
+            chunks[1],
+        );
+        self.draw_cmd(frame, chunks[2]);
+        self.body_width = chunks[3].width;
+        self.body_height = chunks[3].height;
         if !self.on_menu() {
             let card_width = self.reader_card_width();
             let view_height = self.reader_view_height();
@@ -847,8 +852,8 @@ impl App {
                 }
             }
         }
-        self.draw_body(frame, chunks[2]);
-        self.draw_status(frame, chunks[3]);
+        self.draw_body(frame, chunks[3]);
+        self.draw_status(frame, chunks[4]);
         if self.help {
             self.draw_help(frame, area);
         }
@@ -3435,10 +3440,16 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer();
-        let line: String = (0..80)
+        let gutter: String = (0..80)
             .map(|x| buffer[(x, 0)].symbol().to_string())
             .collect();
+        assert!(!gutter.contains("MENU"), "{gutter}");
+        assert_eq!(buffer[(0, 0)].bg, BACKGROUND);
+        let line: String = (0..80)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
         assert!(line.contains("0:MENU"));
+        assert_eq!(buffer[(79, 1)].bg, SURFACE);
     }
 
     fn render_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
@@ -3546,7 +3557,7 @@ mod tests {
     fn menu_shortcut_column_is_ten_wide() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
-        let line = render_line(&mut app, 80, 16, 4);
+        let line = render_line(&mut app, 80, 16, 5);
         let bgb = line.find("BGB").expect("BGB row");
         let title = line.find("Bürgerliches").expect("title");
         assert_eq!(title - bgb, 10);
@@ -3700,7 +3711,7 @@ mod tests {
         let line = render_line(&mut app, 80, 16, 15);
         assert!(line.trim_start().starts_with("NORMAL"));
         assert!(line.trim_end().ends_with(&pos));
-        let tabs = render_line(&mut app, 80, 16, 0);
+        let tabs = render_line(&mut app, 80, 16, 1);
         assert!(tabs.contains("0:MENU"));
         assert!(tabs.contains("1:BGB"));
     }
@@ -4010,7 +4021,7 @@ mod tests {
             !joined.contains('┌'),
             "Bundesrecht is a pane, not a boxed overlay: {joined}"
         );
-        let cmd = render_line(&mut app, 80, 24, 2);
+        let cmd = render_line(&mut app, 80, 24, 3);
         assert!(cmd.contains("/straß"), "{cmd}");
         assert!(!cmd.contains("Suche"), "{cmd}");
         assert_eq!(app.mode_label(), "SEARCH");
@@ -4139,34 +4150,34 @@ mod tests {
     fn menu_and_bund_share_suche_field_on_cmd_line() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
-        let menu_cmd = render_line(&mut app, 80, 16, 2);
+        let menu_cmd = render_line(&mut app, 80, 16, 3);
         assert!(menu_cmd.contains("/ Suche"), "{menu_cmd}");
         let buffer = render_buffer(&mut app, 80, 16);
-        assert_eq!(buffer[(1, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(buffer[(1, 3)].bg, SEARCH_FIELD_BG);
 
         app.handle_key(Key::Slash);
         press(&mut app, &[Key::Char('g'), Key::Char('g')]);
-        let searching = render_line(&mut app, 80, 16, 2);
+        let searching = render_line(&mut app, 80, 16, 3);
         assert!(searching.contains("/gg"), "{searching}");
         assert!(!searching.contains("Suche"), "{searching}");
         app.handle_key(Key::Esc);
 
         app.index = sample_index();
         press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
-        let bund_cmd = render_line(&mut app, 80, 24, 2);
+        let bund_cmd = render_line(&mut app, 80, 24, 3);
         assert!(bund_cmd.contains("/ Suche"), "{bund_cmd}");
         let bund_buf = render_buffer(&mut app, 80, 24);
-        assert_eq!(bund_buf[(1, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(bund_buf[(1, 3)].bg, SEARCH_FIELD_BG);
         app.handle_key(Key::Esc);
 
         let mut reader = sample_app(dir.path(), Some("bgb"), None);
-        let reader_cmd = render_line(&mut reader, 80, 16, 2);
+        let reader_cmd = render_line(&mut reader, 80, 16, 3);
         assert!(reader_cmd.contains("/ Suche"), "{reader_cmd}");
         let reader_buf = render_buffer(&mut reader, 80, 16);
-        assert_eq!(reader_buf[(1, 2)].bg, SEARCH_FIELD_BG);
+        assert_eq!(reader_buf[(1, 3)].bg, SEARCH_FIELD_BG);
         reader.handle_key(Key::Slash);
         press(&mut reader, &[Key::Char('k'), Key::Char('a')]);
-        let reader_search = render_line(&mut reader, 80, 16, 2);
+        let reader_search = render_line(&mut reader, 80, 16, 3);
         assert!(reader_search.contains("/ka"), "{reader_search}");
         assert!(!reader_search.contains("Suche"), "{reader_search}");
     }
@@ -4376,27 +4387,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_at(dir.path(), None);
         let buffer = render_buffer(&mut app, 80, 16);
-        assert_eq!(buffer[(0, 2)].bg, BACKGROUND);
-        assert_eq!(buffer[(1, 1)].bg, BACKGROUND);
-        assert_eq!(buffer[(1, 2)].bg, SEARCH_FIELD_BG);
-        assert_eq!(buffer[(77, 2)].bg, SEARCH_FIELD_BG);
-        assert_eq!(buffer[(78, 2)].bg, BACKGROUND);
-        assert_eq!(buffer[(1, 3)].bg, BACKGROUND);
-        let first = render_line(&mut app, 80, 16, 4);
+        assert_eq!(buffer[(0, 3)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 2)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 3)].bg, SEARCH_FIELD_BG);
+        assert_eq!(buffer[(77, 3)].bg, SEARCH_FIELD_BG);
+        assert_eq!(buffer[(78, 3)].bg, BACKGROUND);
+        assert_eq!(buffer[(1, 4)].bg, BACKGROUND);
+        let first = render_line(&mut app, 80, 16, 5);
         assert!(first.contains("BGB"), "one pad row under the field: {first}");
-        let gap = render_line(&mut app, 80, 16, 3);
+        let gap = render_line(&mut app, 80, 16, 4);
         assert!(!gap.contains("BGB"), "{gap}");
 
         app.index = sample_index();
         press(&mut app, &[Key::Ctrl('n'), Key::Char('a')]);
         let bund = render_buffer(&mut app, 80, 24);
-        assert_eq!(bund[(0, 2)].bg, BACKGROUND);
-        assert_eq!(bund[(1, 1)].bg, BACKGROUND);
-        assert_eq!(bund[(1, 2)].bg, SEARCH_FIELD_BG);
-        assert_eq!(bund[(77, 2)].bg, SEARCH_FIELD_BG);
-        assert_eq!(bund[(78, 2)].bg, BACKGROUND);
-        assert_eq!(bund[(1, 3)].bg, BACKGROUND);
-        let bund_first = render_line(&mut app, 80, 24, 4);
+        assert_eq!(bund[(0, 3)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 2)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 3)].bg, SEARCH_FIELD_BG);
+        assert_eq!(bund[(77, 3)].bg, SEARCH_FIELD_BG);
+        assert_eq!(bund[(78, 3)].bg, BACKGROUND);
+        assert_eq!(bund[(1, 4)].bg, BACKGROUND);
+        let bund_first = render_line(&mut app, 80, 24, 5);
         assert!(bund_first.contains("BGB"), "{bund_first}");
     }
 
