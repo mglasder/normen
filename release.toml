@@ -1,0 +1,7 @@
+# Config for cargo-release, used by scripts/release.sh.
+# CI publishes to crates.io and Homebrew when the tag is pushed.
+allow-branch = ["main"]
+publish = false
+push = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "Release v{{version}}"

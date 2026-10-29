@@ -1,0 +1,30 @@
+# Publishes the crate to crates.io. Called by release.yml (dist custom publish job).
+# Required repository secrets:
+#   HOMEBREW_TAP_TOKEN    used by the dist homebrew job
+#   CARGO_REGISTRY_TOKEN  crates.io API token, used here
+name: Publish crates
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish-crates:
+    runs-on: ubuntu-latest
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ fromJson(inputs.plan).announcement_tag }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
