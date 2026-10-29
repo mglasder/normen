@@ -4,3 +4,4 @@
 docs/*
 !docs/adr/
 !docs/adr/**
+.env
